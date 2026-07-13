@@ -1,0 +1,23 @@
+[Unit]
+Description=Discord DevOps Bot (Claude Code Integration)
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Type=simple
+User=ubuntu
+Group=docker
+WorkingDirectory=/home/ubuntu/workspace/discord-devops-bot
+EnvironmentFile=/home/ubuntu/workspace/discord-devops-bot/.env
+ExecStart=/home/ubuntu/workspace/discord-devops-bot/venv/bin/python bot.py
+Restart=on-failure
+RestartSec=5s
+StartLimitBurst=5
+StartLimitIntervalSec=60
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=discord-devops-bot
+
+[Install]
+WantedBy=multi-user.target
