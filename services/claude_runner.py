@@ -77,6 +77,7 @@ def failure_reason(task, persona: str = "Shaula") -> str:
     """Always return a human-readable explanation for a failed task (never None).
     `persona` is who speaks the message — Shaula on the executor bot, Emilia in single-bot mode."""
     raw = task.error_text or ""
+    engine_name = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"
 
     # Authoritative rate-limit signal from the stream-json rate_limit_event
     if raw.startswith("__RATE_LIMIT__"):
@@ -85,8 +86,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
         when = _format_reset(resets)
         when_txt = f" Limitnya reset sekitar **{when}**." if when else ""
         return (
-            f"⏳ **Limit token Claude ({window}) lagi abis, Apis.**\n"
-            f"Akun Claude udah nyentuh batas pemakaian, jadi {persona} belum bisa lanjut.{when_txt}\n"
+            f"⏳ **Limit token {engine_name} ({window}) lagi abis, Apis.**\n"
+            f"Akun {engine_name} udah nyentuh batas pemakaian, jadi {persona} belum bisa lanjut.{when_txt}\n"
             f"Session ini {persona} biarin hidup kok — pas udah reset, tinggal bales lagi buat nerusin~ 🙏"
         )
 
@@ -97,8 +98,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
         "out of credit", "insufficient credit", "quota", "five_hour",
     )):
         return (
-            "⏳ **Limit token Claude lagi abis, Apis.**\n"
-            f"Akun Claude udah nyentuh batas pemakaian (biasanya window 5 jam), jadi {persona} "
+            f"⏳ **Limit token {engine_name} lagi abis, Apis.**\n"
+            f"Akun {engine_name} udah nyentuh batas pemakaian, jadi {persona} "
             f"belum bisa lanjut sampai limitnya reset. Session ini {persona} biarin hidup kok — "
             "pas udah reset, tinggal bales lagi buat nerusin~ 🙏"
         )
@@ -111,8 +112,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
 
     # Unknown error → at least surface the real text so it's not a black box.
     if raw.strip():
-        return f"Claude Code error:\n```\n{raw[:600]}\n```"
-    return "Claude Code gagal tanpa detail (kemungkinan process ke-kill atau timeout)."
+        return f"{engine_name} error:\n```\n{raw[:600]}\n```"
+    return f"{engine_name} gagal tanpa detail (kemungkinan process ke-kill atau timeout)."
 
 
 # ── Hermes RAM management ────────────────────────────────────────────────────
@@ -188,6 +189,23 @@ SHAULA_PERSONA = (
 
 
 def _build_plan_cmd(task: TaskRecord) -> list[str]:
+    if config.CLI_ENGINE == "agy":
+        prompt = (
+            f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+            f"Plan only (do not execute, make no changes): {task.description}"
+        )
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+        return cmd
+
     cmd = [
         config.CLAUDE_BIN,
         "--print",
@@ -210,6 +228,26 @@ def _build_exec_cmd(
     session_id: Optional[str] = None,
     resume: bool = False,
 ) -> list[str]:
+    if config.CLI_ENGINE == "agy":
+        # First turn establishes persona; subsequent turns maintain context
+        prompt = (
+            f"[System Instruction: {SHAULA_PERSONA}]\n\n{task.description}"
+            if not resume else task.description
+        )
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "stream-json",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+        if resume and session_id:
+            cmd += ["--conversation", session_id]
+        return cmd
+
     cmd = [
         config.CLAUDE_BIN,
         "--print",
@@ -282,14 +320,16 @@ async def run_execution(
     session_id: Optional[str] = None,
     resume: bool = False,
     config_dir: Optional[str] = None,
+    on_session_id: Optional[Callable[[str], None]] = None,
 ) -> bool:
     task_store.update_state(task.task_id, TaskState.RUNNING)
     cmd = _build_exec_cmd(task, session_id=session_id, resume=resume)
     logger.info(
-        "Executing task %s%s%s",
+        "Executing task %s%s%s [%s]",
         task.task_id[:8],
         f" (session {session_id[:8]}, resume={resume})" if session_id else "",
         " [kantor account]" if config_dir else "",
+        config.CLI_ENGINE,
     )
 
     hermes_suspended = await _suspend_hermes_if_needed()
@@ -315,7 +355,7 @@ async def run_execution(
         )
         task.process_pid = proc.pid
     except Exception as e:
-        logger.error("Failed to start claude for task %s: %s", task.task_id[:8], e)
+        logger.error("Failed to start %s for task %s: %s", config.CLI_ENGINE, task.task_id[:8], e)
         task_store.update_state(task.task_id, TaskState.FAILED)
         if hermes_suspended:
             _resume_hermes_background()
@@ -342,6 +382,61 @@ async def run_execution(
                     accumulated += line + "\n"
                     continue
 
+                # ── 1. Antigravity CLI (agy) events ─────────────────────────────
+                if "event" in event:
+                    ev_type = event.get("event")
+                    if ev_type == "init":
+                        cid = event.get("conversation_id")
+                        if cid:
+                            task.session_id = cid
+                            if on_session_id:
+                                on_session_id(cid)
+                    elif ev_type == "step_update":
+                        su = event.get("step_update", {})
+                        stype = su.get("step_type")
+                        state = su.get("state")
+                        if stype == "tool" and state == "ACTIVE":
+                            tname = su.get("tool_name") or su.get("tool_info", {}).get("name") or "tool"
+                            tparams = su.get("tool_info", {}).get("parameters", {})
+                            detail = ""
+                            if "CommandLine" in tparams:
+                                detail = f": `{tparams['CommandLine'][:100]}`"
+                            elif "AbsolutePath" in tparams:
+                                detail = f": `{os.path.basename(str(tparams['AbsolutePath']))}`"
+                            elif "TargetFile" in tparams:
+                                detail = f": `{os.path.basename(str(tparams['TargetFile']))}`"
+                            elif "Query" in tparams:
+                                detail = f": `{tparams['Query'][:80]}`"
+                            action_txt = f"\n⚡ **Action:** `{tname}`{detail}...\n"
+                            buffer.append(action_txt)
+                        elif stype == "agent_response":
+                            tdelta = su.get("text_delta") or ""
+                            if tdelta:
+                                buffer.append(tdelta)
+                                task.output_lines.append(tdelta)
+                                accumulated += tdelta
+                        u = su.get("usage") or {}
+                        ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_tokens") or 0)
+                        if ctx > task.context_tokens:
+                            task.context_tokens = ctx
+                    elif ev_type == "result":
+                        res = event.get("result", {})
+                        cid = res.get("conversation_id")
+                        if cid:
+                            task.session_id = cid
+                            if on_session_id:
+                                on_session_id(cid)
+                        resp = res.get("response") or ""
+                        if not task.output_lines and resp:
+                            task.output_lines.append(resp)
+                            buffer.append(resp)
+                            accumulated += resp
+                        status = res.get("status")
+                        if status and status != "SUCCESS":
+                            task.error_text = res.get("error") or f"agy execution status: {status}"
+                    continue
+
+                # ── 2. Claude Code events ───────────────────────────────────────
                 etype = event.get("type")
                 if etype == "assistant":
                     msg = event.get("message", {})
@@ -494,6 +589,10 @@ async def run_compaction(
     config_dir: Optional[str] = None,
     timeout: int = 180,
 ) -> bool:
+    if config.CLI_ENGINE == "agy":
+        # Antigravity CLI automatically caches prompts and handles token compaction
+        return True
+
     """Run Claude Code's built-in `/compact` on an existing session to shrink its context.
 
     Fires `claude --print --resume <sid> "/compact"`, which summarizes the conversation

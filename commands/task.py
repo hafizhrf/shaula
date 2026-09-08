@@ -220,9 +220,14 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
             proc.kill()
 
     try:
+        def on_session_id_resolved(sid: str):
+            if sess:
+                sess.session_id = sid
+
         success = await claude_runner.run_execution(
             task, on_chunk=on_chunk, on_input_needed=on_input_needed,
             session_id=session_id, resume=resume, config_dir=account_config_dir,
+            on_session_id=on_session_id_resolved,
         )
     finally:
         if sess:
@@ -282,8 +287,9 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
     if session_alive:
         persona = _persona()
         view = StopSessionView(sess.channel_id, persona=persona)
+        engine_label = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"
         notice = await channel.send(
-            f"🟢 *Session Claude aktif (turn {sess.turns}, id `{sess.session_id[:8]}`) — bales "
+            f"🟢 *Session {engine_label} aktif (turn {sess.turns}, id `{sess.session_id[:8]}`) — bales "
             f"aja buat lanjutin obrolan ke session yang sama. Ketik `selesai` / `stop session` "
             f"atau tekan tombol di bawah kalau mau {persona} tutup~*",
             view=view,
@@ -301,51 +307,77 @@ class TaskCommands(commands.Cog):
         claude_runner.ensure_project_dir(task)
         await _execute_and_stream(task, channel)
 
-    @app_commands.command(name="task", description="Send a task to Claude Code")
-    @app_commands.describe(description="What should Claude do?")
-    async def task_cmd(self, interaction: discord.Interaction, description: str):
+    @app_commands.command(
+        name="run",
+        description="Kirim dan jalankan tugas dengan Shaula (AI DevOps executor)",
+    )
+    @app_commands.describe(
+        description="Apa yang harus dikerjakan Shaula?",
+        kantor="Jalanin pakai akun kantor (khusus fallback engine Claude)",
+    )
+    async def run_cmd(
+        self, interaction: discord.Interaction, description: str, kantor: bool = False
+    ):
         await interaction.response.defer()
-        # Same flow as chatting with Shaula: auto-execute in a continuable session.
-        # No plan-mode gate — it's unused here and only ever errored out ("sekali jalan").
-        await interaction.followup.send(
-            f"📨 Task diterima — Shaula kerjain di thread ya, Shisou~\n`{description[:120]}`"
-        )
-        await run_task_flow(
-            description=description,
-            creator_id=interaction.user.id,
-            guild_id=interaction.guild_id,
-            channel=interaction.channel,
-        )
+        if kantor and config.CLI_ENGINE == "claude":
+            if not config.CLAUDE_KANTOR_CONFIG_DIR or not os.path.isdir(config.CLAUDE_KANTOR_CONFIG_DIR):
+                await interaction.followup.send(
+                    "⚠️ Akun kantor belum ke-setup, Shisou~ "
+                    f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` nggak ketemu."
+                )
+                return
+
+            record = task_store.create_task(
+                description=description,
+                creator_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+            )
+            claude_runner.ensure_project_dir(record)
+
+            await interaction.followup.send(
+                f"🟣 Jalanin pakai **akun kantor** (auto mode), Shisou~\n`{description[:120]}`"
+            )
+            await _execute_and_stream(
+                record, interaction.channel, config_dir=config.CLAUDE_KANTOR_CONFIG_DIR
+            )
+        else:
+            engine_str = f" [{config.CLI_ENGINE}]" if config.CLI_ENGINE else ""
+            await interaction.followup.send(
+                f"📨 Task diterima{engine_str} — Shaula kerjain di thread ya, Shisou~\n`{description[:120]}`"
+            )
+            await run_task_flow(
+                description=description,
+                creator_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel=interaction.channel,
+            )
+
+    @app_commands.command(name="task", description="Alias untuk /run")
+    @app_commands.describe(description="Apa yang harus dikerjakan Shaula?")
+    async def task_cmd(self, interaction: discord.Interaction, description: str):
+        await self.run_cmd(interaction, description, kantor=False)
 
     @app_commands.command(
         name="task-kantor",
-        description="Run a task using the 'kantor' Claude account (fallback when the main account is rate-limited)",
+        description="Alias untuk /run kantor:True (fallback akun kantor Claude)",
     )
-    @app_commands.describe(description="What should Claude do?")
+    @app_commands.describe(description="Apa yang harus dikerjakan Shaula?")
     async def task_kantor_cmd(self, interaction: discord.Interaction, description: str):
-        await interaction.response.defer()
+        await self.run_cmd(interaction, description, kantor=True)
 
-        if not config.CLAUDE_KANTOR_CONFIG_DIR or not os.path.isdir(config.CLAUDE_KANTOR_CONFIG_DIR):
-            await interaction.followup.send(
-                "⚠️ Akun kantor belum ke-setup, Shisou~ "
-                f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` nggak ketemu."
-            )
-            return
-
-        record = task_store.create_task(
-            description=description,
-            creator_id=interaction.user.id,
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-        )
-        claude_runner.ensure_project_dir(record)
-
-        await interaction.followup.send(
-            f"🟣 Jalanin pakai **akun kantor** (auto mode), Shisou~\n`{description[:120]}`"
-        )
-        await _execute_and_stream(
-            record, interaction.channel, config_dir=config.CLAUDE_KANTOR_CONFIG_DIR
-        )
+    @app_commands.command(
+        name="run-file",
+        description="Baca plan dari file (.md dll) lalu jalanin sebagai task Shaula",
+    )
+    @app_commands.describe(
+        path="Path file plan — absolut atau relatif ke /home/ubuntu/workspace",
+        kantor="Jalanin pakai akun kantor (khusus engine Claude)",
+    )
+    async def run_file_cmd(
+        self, interaction: discord.Interaction, path: str, kantor: bool = False
+    ):
+        await self.task_file_cmd(interaction, path, kantor=kantor)
 
     @app_commands.command(
         name="task-file",

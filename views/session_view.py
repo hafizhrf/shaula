@@ -35,9 +35,11 @@ class HapusThreadView(discord.ui.View):
         if not isinstance(channel, discord.Thread):
             await interaction.response.edit_message(view=None)
             return
+        import config
+        engine_label = "Antigravity" if getattr(config, "CLI_ENGINE", "") == "agy" else "Claude"
         if claude_session.is_active(channel.id):
             await interaction.response.send_message(
-                f"⚠️ Session Claude masih aktif. Stop dulu ya, baru {self.persona} bisa hapus thread~",
+                f"⚠️ Session {engine_label} masih aktif. Stop dulu ya, baru {self.persona} bisa hapus thread~",
                 ephemeral=True,
             )
             return
@@ -67,6 +69,7 @@ class StopSessionView(discord.ui.View):
 
     @discord.ui.button(label="Stop session", style=discord.ButtonStyle.danger, emoji="🛑")
     async def stop_session(self, interaction: discord.Interaction, button: discord.ui.Button):
+        import config
         from services import claude_session
         from commands.task import archive_thread
 
@@ -85,8 +88,9 @@ class StopSessionView(discord.ui.View):
 
         is_thread = isinstance(interaction.channel, discord.Thread)
         view = HapusThreadView(self.persona) if is_thread else None
+        engine_label = "Antigravity" if getattr(config, "CLI_ENGINE", "") == "agy" else "Claude"
         await interaction.channel.send(
-            f"🛑 Session Claude ditutup ya, Shisou~ ({turns} turn).{note}",
+            f"🛑 Session {engine_label} ditutup ya, Shisou~ ({turns} turn).{note}",
             view=view,
         )
         await archive_thread(interaction.channel)

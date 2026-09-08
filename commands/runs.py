@@ -61,10 +61,10 @@ class RunsCommands(commands.Cog):
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Detail: /run <id>  (task_id atau session_id, 8 char awal cukup)")
+        embed.set_footer(text="Detail: /run-detail <id>  (task_id atau session_id, 8 char awal cukup)")
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="run", description="Detail satu run / semua turn dari sebuah session")
+    @app_commands.command(name="run-detail", description="Detail satu run / semua turn dari sebuah session")
     @app_commands.describe(id="task_id atau session_id (boleh 8 char pertama aja)")
     async def run_cmd(self, interaction: discord.Interaction, id: str):
         await interaction.response.defer()
