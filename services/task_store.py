@@ -64,6 +64,10 @@ class TaskRecord:
     process_pid: Optional[int] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     cost_usd: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    session_id: Optional[str] = None
     error_text: str = ""
     # Context size (input tokens) of the last API call this run, from the stream-json
     # `result` usage. Drives Shaula's auto-compaction trigger. 0 = unknown/not captured.

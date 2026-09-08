@@ -281,6 +281,44 @@ def extract_question_and_options(output_text: str, session_id: Optional[str] = N
     return None
 
 
+def extract_deferred_plan_questions(plan_text: str) -> list[dict]:
+    """Find decision blocks an agent mistakenly put inside its final plan.
+
+    Interactive decisions belong in Discord buttons, not in a plan that has already
+    been presented as ready.  This deliberately recognizes only explicit Question/Choice
+    headings so normal numbered implementation steps are never turned into buttons.
+    """
+    heading = re.compile(r"^\s{0,3}#{1,6}\s*(?:question|choice)\s*(\d+)\s*:\s*(.+?)\s*$", re.IGNORECASE)
+    option = re.compile(r"^\s*(\d+)[.)]\s+(.+?)\s*$")
+    found: list[dict] = []
+    current_question = ""
+    current_options: list[str] = []
+
+    def finish() -> None:
+        nonlocal current_question, current_options
+        if 2 <= len(current_options) <= 5:
+            found.append({"id": len(found) + 1, "question": current_question, "options": current_options})
+        current_question, current_options = "", []
+
+    for line in (plan_text or "").splitlines():
+        match = heading.match(line)
+        if match:
+            finish()
+            current_question = match.group(2).strip()
+            continue
+        if not current_question:
+            continue
+        match = option.match(line)
+        if not match:
+            continue
+        text = re.sub(r"^\*\*[^*]+\*\*\s*[:—-]?\s*", "", match.group(2)).strip()
+        text = re.sub(r"^Option\s+\d+\s*[:—-]?\s*", "", text, flags=re.IGNORECASE).strip()
+        if text and len(text) <= 500:
+            current_options.append(text)
+    finish()
+    return found
+
+
 def _build_plan_cmd(task: TaskRecord) -> list[str]:
     if config.CLI_ENGINE == "agy":
         prompt = (
@@ -441,7 +479,7 @@ async def generate_plan_questions(
             config.AGY_BIN,
             "-p", prompt,
             "--output-format", "stream-json",
-            "--dangerously-skip-permissions",
+            "--sandbox",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
         ]
@@ -475,8 +513,9 @@ async def generate_plan_questions(
             cwd=task.project_dir,
             env=env,
             start_new_session=True,
+            limit=4 * 1024 * 1024,  # Agy can emit a large transcript event
         )
-        raw, stderr = await _read_plan_stream(
+        raw, stderr, _ = await _read_plan_stream(
             proc,
             on_chunk=on_chunk,
             on_activity=on_activity,
@@ -575,15 +614,22 @@ async def _read_plan_stream(
     on_activity: Callable | None = None,
     timeout: float,
     label: str,
-) -> tuple[str, bytes]:
+) -> tuple[str, bytes, str | None]:
     """Collect a plan while forwarding native CLI text deltas to Discord."""
     fragments: list[str] = []
     final_response = ""
+    conversation_id: str | None = None
 
     async def read_stdout() -> None:
         nonlocal final_response
         async for raw_line in proc.stdout:
             line = raw_line.decode("utf-8", errors="replace").strip()
+            try:
+                event = json.loads(line)
+                if event.get("event") == "init":
+                    conversation_id = event.get("conversation_id") or conversation_id
+            except json.JSONDecodeError:
+                pass
             activity = _plan_stream_activity(line)
             if activity and on_activity:
                 try:
@@ -614,7 +660,46 @@ async def _read_plan_stream(
         await terminate_process_group(proc, label=label)
         raise
 
-    return "".join(fragments) or final_response, stderr
+    return "".join(fragments) or final_response, stderr, conversation_id
+
+
+async def _resume_interrupted_agy_plan(
+    *,
+    cmd: list[str],
+    conversation_id: str,
+    cwd: str,
+    env: dict[str, str],
+    on_chunk: Callable | None,
+    on_activity: Callable | None,
+    timeout: float,
+    label: str,
+) -> tuple[str, bytes, int]:
+    """Give an interrupted Agy planning turn one no-tool chance to finish its answer."""
+    retry_cmd = list(cmd)
+    prompt_index = retry_cmd.index("-p") + 1
+    retry_cmd[prompt_index] = (
+        "A previous inspection tool was interrupted. Do not call any more tools. "
+        "Using the findings already in this conversation, write the requested complete "
+        "implementation plan directly as the final response now."
+    )
+    retry_cmd.extend(["--conversation", conversation_id])
+    proc = await asyncio.create_subprocess_exec(
+        *retry_cmd,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+        limit=4 * 1024 * 1024,
+    )
+    plan, stderr, _ = await _read_plan_stream(
+        proc,
+        on_chunk=on_chunk,
+        on_activity=on_activity,
+        timeout=timeout,
+        label=f"{label} recovery",
+    )
+    return plan, stderr, proc.returncode
 
 
 async def generate_final_plan(
@@ -650,7 +735,10 @@ async def generate_final_plan(
         "  3. 📝 Modified Files & Components\n"
         "  4. 🧪 Verification Steps\n"
         "- Use Shaula's persona in the introductory and concluding remarks.\n"
-        "- Do NOT execute the changes yet — only formulate the plan."
+        "- Do NOT execute the changes yet — only formulate the plan.\n"
+        "- Do not ask or present any new questions/choices in this final plan; decisions belong to the earlier Discord clarification step. Choose and state a sensible default if one remains.\n"
+        "- Keep inspection searches tightly scoped to the relevant project directory or an explicit filename; never recursively search the whole workspace.\n"
+        "- If any inspection tool fails or times out, do not retry broad searches; use the findings already collected and immediately write the complete plan."
     )
 
     if config.CLI_ENGINE == "agy":
@@ -658,7 +746,7 @@ async def generate_final_plan(
             config.AGY_BIN,
             "-p", prompt,
             "--output-format", "stream-json",
-            "--dangerously-skip-permissions",
+            "--sandbox",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
         ]
@@ -692,18 +780,33 @@ async def generate_final_plan(
             cwd=task.project_dir,
             env=env,
             start_new_session=True,
+            limit=4 * 1024 * 1024,  # Agy can emit a large transcript event
         )
-        plan, stderr = await _read_plan_stream(
+        plan, stderr, conversation_id = await _read_plan_stream(
             proc,
             on_chunk=on_chunk,
             on_activity=on_activity,
             timeout=config.PLAN_TIMEOUT_SECONDS,
             label=f"plan generation {task.task_id[:8]}",
         )
-        if proc.returncode != 0:
-            logger.error("Planning failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
+        returncode = proc.returncode
+        plan = plan.strip()
+        if returncode != 0 and not plan and conversation_id and config.CLI_ENGINE == "agy":
+            logger.warning("Plan stream interrupted; resuming conversation %s once", conversation_id[:8])
+            plan, stderr, returncode = await _resume_interrupted_agy_plan(
+                cmd=cmd, conversation_id=conversation_id, cwd=task.project_dir, env=env,
+                on_chunk=on_chunk, on_activity=on_activity, timeout=config.PLAN_TIMEOUT_SECONDS,
+                label=f"plan generation {task.task_id[:8]}",
+            )
+            plan = plan.strip()
+        # Agy can return a non-zero code after an otherwise complete stream.
+        # Keep valid plan text instead of discarding it solely by return code.
+        if returncode != 0 and not plan:
+            logger.error("Planning failed (rc=%d): %s", returncode, stderr.decode()[:300])
             return None
-        return plan.strip()
+        if returncode != 0:
+            logger.warning("Planning completed with rc=%d but yielded a plan", returncode)
+        return plan or None
     except asyncio.TimeoutError:
         logger.error("Plan generation timed out for task %s", task.task_id[:8])
         return None
@@ -749,7 +852,10 @@ async def generate_revised_plan(
         "  3. 📝 Modified Files & Components\n"
         "  4. 🧪 Verification Steps\n"
         "- Use Shaula's persona in the introductory and concluding remarks.\n"
-        "- Do NOT execute the changes yet — only formulate the revised plan."
+        "- Do NOT execute the changes yet — only formulate the revised plan.\n"
+        "- Do not ask or present any new questions/choices in this final plan; decisions belong to the earlier Discord clarification step. Choose and state a sensible default if one remains.\n"
+        "- Keep inspection searches tightly scoped to the relevant project directory or an explicit filename; never recursively search the whole workspace.\n"
+        "- If any inspection tool fails or times out, do not retry broad searches; use the findings already collected and immediately write the complete revised plan."
     )
 
     if config.CLI_ENGINE == "agy":
@@ -757,7 +863,7 @@ async def generate_revised_plan(
             config.AGY_BIN,
             "-p", prompt,
             "--output-format", "stream-json",
-            "--dangerously-skip-permissions",
+            "--sandbox",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
         ]
@@ -791,18 +897,31 @@ async def generate_revised_plan(
             cwd=task.project_dir,
             env=env,
             start_new_session=True,
+            limit=4 * 1024 * 1024,  # Agy can emit a large transcript event
         )
-        plan, stderr = await _read_plan_stream(
+        plan, stderr, conversation_id = await _read_plan_stream(
             proc,
             on_chunk=on_chunk,
             on_activity=on_activity,
             timeout=config.PLAN_TIMEOUT_SECONDS,
             label=f"plan revision {task.task_id[:8]}",
         )
-        if proc.returncode != 0:
-            logger.error("Plan revision failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
+        returncode = proc.returncode
+        plan = plan.strip()
+        if returncode != 0 and not plan and conversation_id and config.CLI_ENGINE == "agy":
+            logger.warning("Plan revision stream interrupted; resuming conversation %s once", conversation_id[:8])
+            plan, stderr, returncode = await _resume_interrupted_agy_plan(
+                cmd=cmd, conversation_id=conversation_id, cwd=task.project_dir, env=env,
+                on_chunk=on_chunk, on_activity=on_activity, timeout=config.PLAN_TIMEOUT_SECONDS,
+                label=f"plan revision {task.task_id[:8]}",
+            )
+            plan = plan.strip()
+        if returncode != 0 and not plan:
+            logger.error("Plan revision failed (rc=%d): %s", returncode, stderr.decode()[:300])
             return None
-        return plan.strip()
+        if returncode != 0:
+            logger.warning("Plan revision completed with rc=%d but yielded a plan", returncode)
+        return plan or None
     except asyncio.TimeoutError:
         logger.error("Plan revision timed out for task %s", task.task_id[:8])
         return None
@@ -818,6 +937,7 @@ async def run_execution(
     task: TaskRecord,
     on_chunk: Callable | None = None,
     on_input_needed: Callable | None = None,
+    on_activity: Callable | None = None,
     session_id: Optional[str] = None,
     resume: bool = False,
     config_dir: Optional[str] = None,
@@ -912,8 +1032,12 @@ async def run_execution(
                                 detail = f": `{os.path.basename(str(tparams['TargetFile']))}`"
                             elif "Query" in tparams:
                                 detail = f": `{tparams['Query'][:80]}`"
-                            action_txt = f"\n⚡ **Action:** `{tname}`{detail}...\n"
-                            buffer.append(action_txt)
+                            action_txt = f"⚡ **Action:** `{tname}`{detail}..."
+                            if on_activity:
+                                try:
+                                    await on_activity(action_txt)
+                                except Exception as exc:
+                                    logger.warning("Could not publish task activity for %s: %s", task.task_id[:8], exc)
                         elif stype == "agent_response":
                             tdelta = su.get("text_delta") or ""
                             if tdelta:
@@ -939,6 +1063,24 @@ async def run_execution(
                         status = res.get("status")
                         if status and status != "SUCCESS":
                             task.error_text = res.get("error") or f"agy execution status: {status}"
+                        u = res.get("usage") or {}
+                        if u:
+                            inp = int(u.get("input_tokens") or 0)
+                            out = int(u.get("output_tokens") or 0)
+                            tot = int(u.get("total_tokens") or (inp + out))
+                            cache = int(u.get("cache_read_tokens") or 0)
+                            task.prompt_tokens = inp
+                            task.completion_tokens = out
+                            task.total_tokens = tot
+                            # Calculate estimated USD cost for Gemini 3.8 Flash / Flash models:
+                            # Flash pricing: $0.15 / 1M prompt, $0.60 / 1M completion, cached prompt at 75% discount ($0.0375 / 1M)
+                            non_cached = max(0, inp - cache)
+                            calc_cost = (
+                                (non_cached * 0.15 / 1_000_000)
+                                + (cache * 0.0375 / 1_000_000)
+                                + (out * 0.60 / 1_000_000)
+                            )
+                            task.cost_usd = round(calc_cost, 6)
                     continue
 
                 # ── 2. Claude Code events ───────────────────────────────────────
@@ -974,6 +1116,13 @@ async def run_execution(
                     if cost:
                         final_cost = float(cost)
                         task.cost_usd = final_cost
+                    u = event.get("usage") or {}
+                    if u:
+                        inp = int(u.get("input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                        out = int(u.get("output_tokens") or 0)
+                        task.prompt_tokens = inp
+                        task.completion_tokens = out
+                        task.total_tokens = inp + out
                     # NOTE: context size is tracked from per-`assistant` usage above, NOT
                     # from result.usage here — result.usage is cumulative across the turn.
                     subtype = str(event.get("subtype", ""))

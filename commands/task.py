@@ -51,16 +51,24 @@ def _make_plan_stream_callback(status_msg: discord.Message, label: str):
 
 
 def _make_plan_activity_callback(status_msg: discord.Message, label: str):
-    """Show native Agy tool activity while a plan is being analyzed or drafted."""
+    """Publish tool activity separately so it never overwrites streamed agent text."""
     last_edit = 0.0
+    activity_msg: discord.Message | None = None
 
     async def on_activity(activity: str) -> None:
-        nonlocal last_edit
+        nonlocal last_edit, activity_msg
         now = asyncio.get_running_loop().time()
         if now - last_edit < config.STREAM_EDIT_INTERVAL_SECONDS:
             return
         last_edit = now
-        await status_msg.edit(content=f"🔎 **{label}...**\n{activity}")
+        content = f"🔎 **{label}...**\n{activity}"
+        try:
+            if activity_msg is None:
+                activity_msg = await status_msg.channel.send(content)
+            else:
+                await activity_msg.edit(content=content)
+        except discord.HTTPException:
+            pass
 
     return on_activity
 
@@ -281,15 +289,38 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         logger.warning("Running-embed send failed (%s) — falling back to plain text", e)
         status_msg = await channel.send("⚙️ Shaula is starting on this task now, Shisou~! (๑•̀ㅂ•́)و✧")
     last_text = ""
+    response_msg: discord.Message | None = None
+    activity_msg: discord.Message | None = None
 
-    async def on_chunk(text: str):
-        nonlocal last_text
-        display = text[-MAX_STREAM_DISPLAY:] if len(text) > MAX_STREAM_DISPLAY else text
+    async def _show_response(text: str) -> None:
+        """Keep agent narration in its own message; task status stays status-only."""
+        nonlocal last_text, response_msg
+        display = text[-1800:] if len(text) > 1800 else text
+        display = display.replace("```", "ˋˋˋ")
         if display == last_text:
             return
         last_text = display
+        content = f"💬 **{_persona()}:**\n```\n{display}\n```"
         try:
-            await status_msg.edit(content=f"```\n{display}\n```", embed=None)
+            if response_msg is None:
+                response_msg = await channel.send(content)
+            else:
+                await response_msg.edit(content=content)
+        except discord.HTTPException:
+            pass
+
+    async def on_chunk(text: str):
+        await _show_response(text)
+
+    async def on_activity(activity: str):
+        """Keep repetitive tool updates in a dedicated, replaceable activity message."""
+        nonlocal activity_msg
+        content = f"⚡ **{_persona()} activity:** {activity}"
+        try:
+            if activity_msg is None:
+                activity_msg = await channel.send(content)
+            else:
+                await activity_msg.edit(content=content)
         except discord.HTTPException:
             pass
 
@@ -365,7 +396,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
                 sess.session_id = sid
 
         success = await claude_runner.run_execution(
-            task, on_chunk=on_chunk, on_input_needed=on_input_needed,
+            task, on_chunk=on_chunk, on_input_needed=on_input_needed, on_activity=on_activity,
             session_id=session_id, resume=resume, config_dir=account_config_dir,
             on_session_id=on_session_id_resolved,
         )
@@ -384,7 +415,16 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
     # stop handler already messaged the user — don't post a misleading result or footer.
     session_alive = sess is not None and claude_session.get(sess.channel_id) is sess
     if sess is not None and not session_alive:
-        await run_store.finish_run(task.task_id, "CANCELLED", task.cost_usd, task.error_text)
+        await run_store.finish_run(
+            task.task_id,
+            "CANCELLED",
+            task.cost_usd,
+            task.error_text,
+            prompt_tokens=getattr(task, "prompt_tokens", 0),
+            completion_tokens=getattr(task, "completion_tokens", 0),
+            total_tokens=getattr(task, "total_tokens", 0),
+            session_id=task.session_id or (sess.session_id if sess else None),
+        )
         try:
             await status_msg.edit(content="🛑 Task dihentikan (session ditutup).", embed=None)
         except discord.HTTPException:
@@ -397,6 +437,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
 
     if success:
         if len(full_output) > MAX_STREAM_DISPLAY:
+            await _show_response(full_output)
             await status_msg.edit(
                 content=None,
                 embed=make_done_embed(task, full_output),
@@ -408,8 +449,10 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
                 )
             )
         else:
+            if full_output:
+                await _show_response(full_output)
             await status_msg.edit(
-                content=f"```\n{full_output}\n```" if full_output else None,
+                content=None,
                 embed=make_done_embed(task, full_output),
             )
         # Add task result to conversation history so Emilia remembers what was done
@@ -436,7 +479,14 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         conversation.add_message(channel.id, "user", f"[Task failed — {reason[:150]}]")
 
     await run_store.finish_run(
-        task.task_id, "DONE" if success else "FAILED", task.cost_usd, err_for_db
+        task.task_id,
+        "DONE" if success else "FAILED",
+        task.cost_usd,
+        err_for_db,
+        prompt_tokens=getattr(task, "prompt_tokens", 0),
+        completion_tokens=getattr(task, "completion_tokens", 0),
+        total_tokens=getattr(task, "total_tokens", 0),
+        session_id=task.session_id or (sess.session_id if sess else None),
     )
 
     if session_alive:
@@ -820,10 +870,55 @@ async def run_plan_flow(
         )
         return
 
+    # The planning pass should have asked every material question first.  If the
+    # agent nevertheless embeds explicit Question/Choice sections in its draft,
+    # turn them into real Discord buttons and regenerate before publishing.
+    late_questions = claude_runner.extract_deferred_plan_questions(plan_text)
+    if late_questions:
+        await plan_status_msg.edit(
+            content="❓ **Shaula found decisions in the draft that need Shisou's input first.** "
+            "Please choose below; Shaula will finalize the plan afterward~"
+        )
+        for idx, q_item in enumerate(late_questions):
+            q_text = q_item["question"]
+            opts = q_item["options"]
+            fut = asyncio.get_running_loop().create_future()
+            view = PlanQuestionView(
+                creator_id=creator_id, options=opts, future=fut, channel_id=thread.id,
+                persona=persona, timeout=300.0,
+            )
+            options_display = "\n".join(
+                f"{['1️⃣', '2️⃣', '3️⃣', '4️⃣', '5️⃣'][option_idx]} {option}"
+                for option_idx, option in enumerate(opts)
+            )
+            q_msg = await thread.send(
+                f"**Question {idx + 1} of {len(late_questions)}:**\n> **{q_text}**\n\n"
+                f"{options_display}\n\n"
+                "*These are Shaula's actual options. Click one, click ✏️ Custom answer, or type your own answer directly in this thread, Shisou~*",
+                view=view,
+            )
+            view.message = q_msg
+            selected_answer = await fut
+            if selected_answer is None:
+                await thread.send("⏸️ **Planning paused:** Shaula needs this decision before finalizing the plan, Shisou~")
+                return
+            qna.append({"question": q_text, "answer": selected_answer})
+
+        plan_text = await claude_runner.generate_revised_plan(
+            task=task, previous_plan=plan_text,
+            revision_instruction="Use Shisou's selected answers above. Return the complete final plan now; do not include any unanswered questions or choices.",
+            qna=qna, config_dir=config_dir,
+            on_chunk=_make_plan_stream_callback(plan_status_msg, "Finalizing Implementation Plan"),
+            on_activity=_make_plan_activity_callback(plan_status_msg, "Finalizing Implementation Plan"),
+        )
+        if not plan_text:
+            await plan_status_msg.edit(content="⚠️ Sorry Shisou, Shaula couldn't finalize the plan after the choices.")
+            return
+
     task.plan_text = plan_text
     try:
-        await plan_status_msg.delete()
-    except Exception:
+        await plan_status_msg.edit(content="✅ **Implementation Plan drafted below.**")
+    except discord.HTTPException:
         pass
 
     header = "📋 **Implementation Plan is Ready, Shisou!** ٩(◕‿◕｡)۶\n\n"
@@ -871,8 +966,8 @@ async def run_plan_flow(
             on_activity=_make_plan_activity_callback(status_msg, "Updating revised plan"),
         )
         try:
-            await status_msg.delete()
-        except Exception:
+            await status_msg.edit(content="✅ **Revised Implementation Plan drafted below.**")
+        except discord.HTTPException:
             pass
 
         if not new_plan:

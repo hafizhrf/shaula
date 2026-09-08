@@ -33,6 +33,9 @@ CREATE TABLE IF NOT EXISTS runs (
     account           TEXT,
     turn              INTEGER,
     cost_usd          REAL,
+    prompt_tokens     INTEGER DEFAULT 0,
+    completion_tokens INTEGER DEFAULT 0,
+    total_tokens      INTEGER DEFAULT 0,
     error_text        TEXT,
     created_at        TEXT,
     finished_at       TEXT
@@ -43,8 +46,9 @@ CREATE INDEX IF NOT EXISTS idx_runs_created ON runs(created_at);
 
 _COLUMNS = [
     "task_id", "session_id", "channel_id", "origin_channel_id", "description",
-    "state", "risk_level", "account", "turn", "cost_usd", "error_text",
-    "created_at", "finished_at",
+    "state", "risk_level", "account", "turn", "cost_usd",
+    "prompt_tokens", "completion_tokens", "total_tokens",
+    "error_text", "created_at", "finished_at",
 ]
 
 
@@ -65,6 +69,16 @@ def init_db() -> None:
         with _connect() as conn:
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_SCHEMA)
+            # Auto-migrate missing columns for existing runs.db
+            existing_cols = {r[1] for r in conn.execute("PRAGMA table_info(runs)").fetchall()}
+            for col, col_type in [
+                ("prompt_tokens", "INTEGER DEFAULT 0"),
+                ("completion_tokens", "INTEGER DEFAULT 0"),
+                ("total_tokens", "INTEGER DEFAULT 0"),
+            ]:
+                if col not in existing_cols:
+                    conn.execute(f"ALTER TABLE runs ADD COLUMN {col} {col_type}")
+                    logger.info("Migrated runs table: added column %s", col)
             # A fresh process means nothing is actually executing — any row still marked
             # RUNNING is a leftover from a crash or a mid-task restart (e.g. the bot being
             # restarted while a task ran). Reconcile so it doesn't orphan as RUNNING forever.
@@ -86,18 +100,35 @@ def _start_sync(row: dict) -> None:
         conn.execute(
             "INSERT OR REPLACE INTO runs "
             "(task_id, session_id, channel_id, origin_channel_id, description, state, "
-            " risk_level, account, turn, cost_usd, error_text, created_at, finished_at) "
+            " risk_level, account, turn, cost_usd, prompt_tokens, completion_tokens, total_tokens, "
+            " error_text, created_at, finished_at) "
             "VALUES (:task_id, :session_id, :channel_id, :origin_channel_id, :description, "
-            " :state, :risk_level, :account, :turn, :cost_usd, :error_text, :created_at, NULL)",
+            " :state, :risk_level, :account, :turn, :cost_usd, :prompt_tokens, :completion_tokens, :total_tokens, "
+            " :error_text, :created_at, NULL)",
             row,
         )
 
 
-def _finish_sync(task_id: str, state: str, cost_usd: float, error_text: str) -> None:
+def _finish_sync(
+    task_id: str,
+    state: str,
+    cost_usd: float,
+    error_text: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    session_id: str = None,
+) -> None:
     with _connect() as conn:
         conn.execute(
-            "UPDATE runs SET state=?, cost_usd=?, error_text=?, finished_at=? WHERE task_id=?",
-            (state, cost_usd, error_text, _now(), task_id),
+            "UPDATE runs SET state=?, cost_usd=?, error_text=?, "
+            "prompt_tokens=?, completion_tokens=?, total_tokens=?, "
+            "session_id=COALESCE(?, session_id), finished_at=? WHERE task_id=?",
+            (
+                state, cost_usd, error_text,
+                prompt_tokens, completion_tokens, total_tokens,
+                session_id, _now(), task_id,
+            ),
         )
 
 
@@ -134,6 +165,9 @@ async def start_run(task, session_id, channel_id, origin_channel_id, account, tu
         "account": account,
         "turn": turn,
         "cost_usd": 0.0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "total_tokens": 0,
         "error_text": "",
         "created_at": _now(),
     }
@@ -143,9 +177,28 @@ async def start_run(task, session_id, channel_id, origin_channel_id, account, tu
         logger.error("run_store.start_run failed for %s: %s", task.task_id[:8], e)
 
 
-async def finish_run(task_id: str, state: str, cost_usd: float, error_text: str) -> None:
+async def finish_run(
+    task_id: str,
+    state: str,
+    cost_usd: float,
+    error_text: str,
+    prompt_tokens: int = 0,
+    completion_tokens: int = 0,
+    total_tokens: int = 0,
+    session_id: str = None,
+) -> None:
     try:
-        await asyncio.to_thread(_finish_sync, task_id, state, cost_usd or 0.0, error_text or "")
+        await asyncio.to_thread(
+            _finish_sync,
+            task_id,
+            state,
+            cost_usd or 0.0,
+            error_text or "",
+            prompt_tokens or 0,
+            completion_tokens or 0,
+            total_tokens or 0,
+            session_id,
+        )
     except Exception as e:
         logger.error("run_store.finish_run failed for %s: %s", task_id[:8], e)
 

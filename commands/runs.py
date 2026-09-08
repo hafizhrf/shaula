@@ -26,6 +26,16 @@ def _short(s, n: int) -> str:
     return s if len(s) <= n else s[: n - 1] + "…"
 
 
+def _fmt_tokens(n: int) -> str:
+    if not n:
+        return ""
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f}M tok"
+    if n >= 1_000:
+        return f"{n / 1_000:.1f}k tok"
+    return f"{n} tok"
+
+
 def _when(row: dict) -> str:
     # ISO timestamps are stored as UTC; show the time part compactly.
     ts = row.get("finished_at") or row.get("created_at") or ""
@@ -51,10 +61,12 @@ class RunsCommands(commands.Cog):
             tid = (r.get("task_id") or "")[:8]
             sid = (r.get("session_id") or "--------")[:8]
             cost = r.get("cost_usd") or 0.0
+            tokens = r.get("total_tokens") or 0
+            tok_str = f" · {_fmt_tokens(tokens)}" if tokens else ""
             acct = r.get("account") or "default"
             lines.append(
-                f"{emoji} `{tid}` sess `{sid}` · {_short(r.get('description'), 48)} · "
-                f"${cost:.3f} · {acct} · {_when(r)}"
+                f"{emoji} `{tid}` sess `{sid}` · {_short(r.get('description'), 38)} · "
+                f"${cost:.3f}{tok_str} · {acct} · {_when(r)}"
             )
         embed = discord.Embed(
             title=f"🗂️ Run history (last {len(rows)})",
@@ -86,8 +98,10 @@ class RunsCommands(commands.Cog):
             emoji = _STATE_EMOJI.get(r.get("state", ""), "•")
             tid = (r.get("task_id") or "")[:8]
             cost = r.get("cost_usd") or 0.0
+            tokens = r.get("total_tokens") or 0
+            tok_info = f"  ·  **{_fmt_tokens(tokens)}**" if tokens else ""
             field_lines = [
-                f"**state** {emoji} {r.get('state')}  ·  **account** {r.get('account')}  ·  **${cost:.4f}**",
+                f"**state** {emoji} {r.get('state')}  ·  **account** {r.get('account')}  ·  **${cost:.4f}**{tok_info}",
                 f"**desc** {_short(r.get('description'), 300)}",
                 f"**started** {r.get('created_at') or '?'}  ·  **finished** {r.get('finished_at') or '—'}",
             ]
