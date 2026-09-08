@@ -514,10 +514,85 @@ async def generate_plan_questions(
         return []
 
 
+def _plan_stream_payload(line: str) -> tuple[str, str]:
+    """Return an incremental text delta and a final fallback from one CLI event."""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return line + "\n", ""
+
+    if "event" in event:  # Antigravity CLI
+        event_type = event.get("event")
+        if event_type == "step_update":
+            update = event.get("step_update", {}) or {}
+            if update.get("step_type") == "agent_response":
+                return str(update.get("text_delta") or ""), ""
+        elif event_type == "result":
+            result = event.get("result", {}) or {}
+            return "", str(result.get("response") or "")
+        return "", ""
+
+    if event.get("type") == "assistant":  # Claude Code stream-json
+        content = event.get("message", {}).get("content", [])
+        text = "".join(
+            str(block.get("text") or "")
+            for block in content
+            if block.get("type") == "text"
+        )
+        return text, ""
+    if event.get("type") == "result":
+        return "", str(event.get("result") or "")
+    return "", ""
+
+
+async def _read_plan_stream(
+    proc: asyncio.subprocess.Process,
+    *,
+    on_chunk: Callable | None,
+    timeout: float,
+    label: str,
+) -> tuple[str, bytes]:
+    """Collect a plan while forwarding native CLI text deltas to Discord."""
+    fragments: list[str] = []
+    final_response = ""
+
+    async def read_stdout() -> None:
+        nonlocal final_response
+        async for raw_line in proc.stdout:
+            delta, fallback = _plan_stream_payload(
+                raw_line.decode("utf-8", errors="replace").strip()
+            )
+            if fallback:
+                final_response = fallback
+            if not delta:
+                continue
+            fragments.append(delta)
+            if on_chunk:
+                try:
+                    await on_chunk("".join(fragments))
+                except Exception as exc:
+                    # Discord edits are presentation only; never abort the plan for one failed edit.
+                    logger.warning("Could not publish %s progress: %s", label, exc)
+
+    async def read_all() -> bytes:
+        _, stderr = await asyncio.gather(read_stdout(), proc.stderr.read())
+        await proc.wait()
+        return stderr
+
+    try:
+        stderr = await asyncio.wait_for(read_all(), timeout=timeout)
+    except (asyncio.TimeoutError, asyncio.CancelledError):
+        await terminate_process_group(proc, label=label)
+        raise
+
+    return "".join(fragments) or final_response, stderr
+
+
 async def generate_final_plan(
     task: TaskRecord,
     qna: list[dict],
     config_dir: Optional[str] = None,
+    on_chunk: Callable | None = None,
 ) -> Optional[str]:
     """
     Generates a full implementation plan taking into account Shisou's answers to the questions.
@@ -552,7 +627,7 @@ async def generate_final_plan(
         cmd = [
             config.AGY_BIN,
             "-p", prompt,
-            "--output-format", "text",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -563,7 +638,8 @@ async def generate_final_plan(
         cmd = [
             config.CLAUDE_BIN,
             "--print",
-            "--output-format", "text",
+            "--verbose",
+            "--output-format", "stream-json",
             "--permission-mode", "auto",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -587,13 +663,16 @@ async def generate_final_plan(
             env=env,
             start_new_session=True,
         )
-        stdout, stderr = await communicate_with_timeout(
-            proc, timeout=180, label=f"plan generation {task.task_id[:8]}"
+        plan, stderr = await _read_plan_stream(
+            proc,
+            on_chunk=on_chunk,
+            timeout=config.PLAN_TIMEOUT_SECONDS,
+            label=f"plan generation {task.task_id[:8]}",
         )
         if proc.returncode != 0:
             logger.error("Planning failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
             return None
-        return stdout.decode("utf-8", errors="replace").strip()
+        return plan.strip()
     except asyncio.TimeoutError:
         logger.error("Plan generation timed out for task %s", task.task_id[:8])
         return None
@@ -608,6 +687,7 @@ async def generate_revised_plan(
     revision_instruction: str,
     qna: list[dict],
     config_dir: Optional[str] = None,
+    on_chunk: Callable | None = None,
 ) -> Optional[str]:
     """
     Revises an existing implementation plan based on Shisou's feedback / modifications.
@@ -644,7 +724,7 @@ async def generate_revised_plan(
         cmd = [
             config.AGY_BIN,
             "-p", prompt,
-            "--output-format", "text",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -655,7 +735,8 @@ async def generate_revised_plan(
         cmd = [
             config.CLAUDE_BIN,
             "--print",
-            "--output-format", "text",
+            "--verbose",
+            "--output-format", "stream-json",
             "--permission-mode", "auto",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -679,13 +760,16 @@ async def generate_revised_plan(
             env=env,
             start_new_session=True,
         )
-        stdout, stderr = await communicate_with_timeout(
-            proc, timeout=180, label=f"plan revision {task.task_id[:8]}"
+        plan, stderr = await _read_plan_stream(
+            proc,
+            on_chunk=on_chunk,
+            timeout=config.PLAN_TIMEOUT_SECONDS,
+            label=f"plan revision {task.task_id[:8]}",
         )
         if proc.returncode != 0:
             logger.error("Plan revision failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
             return None
-        return stdout.decode("utf-8", errors="replace").strip()
+        return plan.strip()
     except asyncio.TimeoutError:
         logger.error("Plan revision timed out for task %s", task.task_id[:8])
         return None

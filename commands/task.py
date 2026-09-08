@@ -32,6 +32,24 @@ def _persona() -> str:
     return "Shaula" if config.SHAULA_ENABLED else "Emilia"
 
 
+def _make_plan_stream_callback(status_msg: discord.Message, label: str):
+    """Throttle streamed plan previews to one Discord message."""
+    last_edit = 0.0
+
+    async def on_chunk(plan_so_far: str) -> None:
+        nonlocal last_edit
+        now = asyncio.get_running_loop().time()
+        if now - last_edit < config.STREAM_EDIT_INTERVAL_SECONDS:
+            return
+        last_edit = now
+        preview = plan_so_far[-1600:].replace("```", "ˋˋˋ")
+        await status_msg.edit(
+            content=f"📝 **{label}...**\n```md\n{preview}\n```"
+        )
+
+    return on_chunk
+
+
 async def _clear_active_button(sess=None, channel=None) -> None:
     """Retire the previous 'Session active' notice's Stop button and disable question buttons.
 
@@ -768,7 +786,12 @@ async def run_plan_flow(
         )
 
     plan_status_msg = await thread.send("📝 **Drafting comprehensive Implementation Plan...**")
-    plan_text = await claude_runner.generate_final_plan(task, qna, config_dir=config_dir)
+    plan_text = await claude_runner.generate_final_plan(
+        task,
+        qna,
+        config_dir=config_dir,
+        on_chunk=_make_plan_stream_callback(plan_status_msg, "Drafting Implementation Plan"),
+    )
 
     if not plan_text:
         await plan_status_msg.edit(
@@ -824,6 +847,7 @@ async def run_plan_flow(
             revision_instruction=revision_text,
             qna=qna,
             config_dir=config_dir,
+            on_chunk=_make_plan_stream_callback(status_msg, "Updating revised plan"),
         )
         try:
             await status_msg.delete()

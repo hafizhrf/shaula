@@ -92,6 +92,11 @@ RUN_DB_PATH = _optional("RUN_DB_PATH", os.path.join(_BOT_DIR, "data", "runs.db")
 APPROVAL_TIMEOUT_SECONDS = int(_optional("APPROVAL_TIMEOUT_SECONDS", "900"))
 STREAM_EDIT_INTERVAL_SECONDS = float(_optional("STREAM_EDIT_INTERVAL_SECONDS", "1.5"))
 
+# `/plan` is streamed to Discord and may inspect a large codebase before composing a
+# response. Keep a separate, generous ceiling so it does not inherit the short
+# one-shot planning timeout used by lightweight commands.
+PLAN_TIMEOUT_SECONDS = int(_optional("PLAN_TIMEOUT_SECONDS", "1800"))  # 30 min
+
 # Execution watchdog. Kill a Claude task only when it goes SILENT for this long
 # (genuinely hung), instead of a hard wall-clock cap — long-but-active tasks keep
 # running. EXEC_MAX_TIMEOUT_SECONDS is an absolute safety ceiling.
