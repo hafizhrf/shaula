@@ -181,3 +181,161 @@ class PlanExecuteView(discord.ui.View):
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 pass
+
+
+class SessionQuestionChoiceView(discord.ui.View):
+    """Buttons presented when a /run turn ends with clarifying questions or options."""
+
+    def __init__(
+        self,
+        channel: discord.TextChannel | discord.Thread,
+        creator_id: int,
+        options: list[str],
+        persona: str = "Shaula",
+        timeout: float = 600.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.channel = channel
+        self.creator_id = creator_id
+        self.options = options
+        self.persona = persona
+        self.message: Optional[discord.Message] = None
+
+        num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+        for idx, opt in enumerate(options[:4]):
+            emoji = num_emojis[idx] if idx < len(num_emojis) else "🔹"
+            clean_label = opt.strip().replace("\n", " ")
+            if len(clean_label) > 65:
+                clean_label = clean_label[:62] + "..."
+            button_label = f"{idx + 1}. {clean_label}"
+
+            btn = discord.ui.Button(
+                label=button_label[:80],
+                style=discord.ButtonStyle.primary,
+                emoji=emoji,
+                custom_id=f"run_opt_{idx}",
+            )
+            btn.callback = self._make_callback(opt, idx)
+            self.add_item(btn)
+
+    def _can_interact(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id == self.creator_id:
+            return True
+        user_role_ids = {r.id for r in interaction.user.roles}
+        return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
+
+    def _make_callback(self, choice_text: str, choice_idx: int):
+        async def callback(interaction: discord.Interaction):
+            if not self._can_interact(interaction):
+                await interaction.response.send_message(
+                    f"Hanya Shisou <@{self.creator_id}> yang bisa memilih opsi ini ya~",
+                    ephemeral=True,
+                )
+                return
+
+            self.stop()
+            for item in self.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+                    if item.custom_id == f"run_opt_{choice_idx}":
+                        item.style = discord.ButtonStyle.success
+
+            await interaction.response.edit_message(
+                content=f"{interaction.message.content}\n\n👉 **Dipilih oleh Shisou:** **{choice_text}**",
+                view=self,
+            )
+
+            # Continue the live session with the chosen option as the user's prompt
+            from commands.task import _execute_and_stream
+            from services import task_store, conversation
+
+            prompt = f"Pilihan Shisou: {choice_text}"
+            conversation.add_message(self.channel.id, "user", prompt)
+            exec_task = task_store.create_task(
+                description=prompt,
+                creator_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel_id=self.channel.id,
+            )
+            asyncio.create_task(_execute_and_stream(exec_task, self.channel))
+
+        return callback
+
+    async def on_timeout(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+
+
+class InputPromptButtonsView(discord.ui.View):
+    """Quick-reply buttons for stdin prompts (e.g. Yes/No, Proceed/Cancel)."""
+
+    def __init__(
+        self,
+        channel_id: int,
+        creator_id: int,
+        options: list[str],
+        timeout: float = 300.0,
+    ):
+        super().__init__(timeout=timeout)
+        self.channel_id = channel_id
+        self.creator_id = creator_id
+        self.message: Optional[discord.Message] = None
+
+        for idx, opt in enumerate(options[:5]):
+            style = (
+                discord.ButtonStyle.success
+                if opt.lower() in ("yes", "y", "ya", "lanjut", "proceed")
+                else (
+                    discord.ButtonStyle.danger
+                    if opt.lower() in ("no", "n", "tidak", "batal", "cancel")
+                    else discord.ButtonStyle.primary
+                )
+            )
+            btn = discord.ui.Button(
+                label=opt[:80],
+                style=style,
+                custom_id=f"input_opt_{idx}",
+            )
+            btn.callback = self._make_callback(opt)
+            self.add_item(btn)
+
+    def _make_callback(self, choice_text: str):
+        async def callback(interaction: discord.Interaction):
+            if interaction.user.id != self.creator_id:
+                await interaction.response.send_message(
+                    "Hanya pembuat task yang bisa memilih respon ini ya~",
+                    ephemeral=True,
+                )
+                return
+
+            self.stop()
+            for item in self.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+
+            await interaction.response.edit_message(
+                content=f"{interaction.message.content}\n\n👉 **Input dikirim:** `{choice_text}`",
+                view=self,
+            )
+
+            from services import stdin_relay
+            stdin_relay.provide_input(self.channel_id, choice_text)
+
+        return callback
+
+    async def on_timeout(self):
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if self.message:
+            try:
+                await self.message.edit(view=self)
+            except discord.HTTPException:
+                pass
+

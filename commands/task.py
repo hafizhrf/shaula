@@ -202,12 +202,31 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
             pass
 
     async def on_input_needed(proc, prompt: str):
-        """Claude Code subprocess is waiting for stdin input."""
-        await channel.send(
+        """Subprocess is waiting for stdin input."""
+        from views.plan_view import InputPromptButtonsView
+        options = []
+        low = prompt.lower()
+        if any(k in low for k in ("(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "y/n?", "y/n")):
+            options = ["Yes", "No"]
+        else:
+            q_info = claude_runner.extract_question_and_options(prompt)
+            if q_info:
+                options = q_info.get("options", [])
+
+        view = (
+            InputPromptButtonsView(channel.id, task.creator_id, options)
+            if options
+            else None
+        )
+        tip = " atau tekan tombol opsi di bawah" if options else ""
+        msg = await channel.send(
             f"⏸️ **{_persona()} butuh input dari Shisou!**\n"
             f"> `{prompt[:200]}`\n"
-            f"Ketik responnya di sini~ (atau `cancel` untuk batalkan, timeout 5 menit)"
+            f"Ketik responnya di sini{tip}~ (atau `cancel` untuk batalkan, timeout 5 menit)",
+            view=view,
         )
+        if view:
+            view.message = msg
         try:
             user_input = await stdin_relay.wait_for_input(channel.id, timeout=300.0)
             if proc.stdin and not proc.stdin.is_closing():
@@ -287,6 +306,27 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
 
     if session_alive:
         persona = _persona()
+        # If the turn ended with a question offering options, present them as interactive buttons
+        from views.plan_view import SessionQuestionChoiceView
+        q_info = claude_runner.extract_question_and_options(
+            full_output, session_id=sess.session_id if sess else None
+        )
+        if q_info and q_info.get("options"):
+            q_options = q_info["options"]
+            q_text = q_info.get("question", "Pilih salah satu opsi di bawah ini ya, Shisou~")
+            choice_view = SessionQuestionChoiceView(
+                channel=channel,
+                creator_id=task.creator_id,
+                options=q_options,
+                persona=persona,
+            )
+            choice_msg = await channel.send(
+                f"❓ **{persona} butuh pilihan dari Shisou:**\n> {q_text}\n"
+                f"*Klik salah satu tombol opsi di bawah ya~ 👇*",
+                view=choice_view,
+            )
+            choice_view.message = choice_msg
+
         view = StopSessionView(sess.channel_id, persona=persona)
         engine_label = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"
         notice = await channel.send(

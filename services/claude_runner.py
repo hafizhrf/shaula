@@ -183,9 +183,78 @@ SHAULA_PERSONA = (
     "(っ*´∀｀*)っ, (✧ω✧), 😭, atau ゞ).\n"
     "6. Jawab dengan santai, penuh energi, ekspresif (gunakan tanda seru atau huruf ganda "
     "seperti \"bangeeet\"), dan hindari penjelasan yang terlalu formal atau kaku.\n"
+    "7. Jika sebelum atau saat eksekusi ada pilihan arsitektur/desain/opsi yang perlu diputuskan oleh Shisou, "
+    "tanyakan langsung kepada Shisou dengan menyajikan opsi bernomor yang jelas (misal: 1. Opsi A, 2. Opsi B) "
+    "agar Shisou bisa memilih dengan tombol interaktif Discord.\n"
     "Catatan: kepribadian ini hanya soal GAYA BICARA. Tetap kerjakan tugas teknis dengan "
     "benar, teliti, dan lakukan semua tool/aksi yang diperlukan seperti biasa."
 )
+
+
+def extract_question_from_transcript(session_id: str) -> Optional[dict]:
+    """Inspects the session transcript on disk to check if ask_question tool was called."""
+    if not session_id:
+        return None
+    path = f"/home/ubuntu/.gemini/antigravity-cli/brain/{session_id}/.system_generated/logs/transcript.jsonl"
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        # Check from the latest step backwards
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+                for tc in row.get("tool_calls", []):
+                    if tc.get("name") == "ask_question":
+                        args = tc.get("args", {})
+                        q_data = args.get("questions")
+                        if isinstance(q_data, str):
+                            q_data = json.loads(q_data)
+                        if isinstance(q_data, list) and q_data:
+                            first = q_data[0]
+                            return {
+                                "question": first.get("question", "Pilih opsi di bawah ini ya, Shisou~"),
+                                "options": first.get("options", []),
+                            }
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("Failed reading transcript %s: %s", session_id, e)
+    return None
+
+
+def extract_question_and_options(output_text: str, session_id: Optional[str] = None) -> Optional[dict]:
+    """
+    Detects if a turn's result is asking a multiple-choice question.
+    1. First checks the session transcript if ask_question was called.
+    2. Fallback: parses text for numbered (1., 2., 3.) or lettered (A., B., C.) options.
+    """
+    if session_id:
+        from_trans = extract_question_from_transcript(session_id)
+        if from_trans and len(from_trans.get("options", [])) >= 2:
+            return from_trans
+
+    if not output_text:
+        return None
+
+    lines = [l.strip() for l in output_text.strip().split("\n") if l.strip()]
+    options = []
+    pattern = re.compile(r"^(?:(?:\d+[\.\)]|\[\d+\])|(?:[A-Ea-e][\.\)]|\[[A-Ea-e]\]))\s+(.+)$")
+
+    for line in lines:
+        m = pattern.match(line)
+        if m:
+            clean_opt = m.group(1).strip(" *_-`")
+            if 2 <= len(clean_opt) <= 120:
+                options.append(clean_opt)
+
+    if len(options) >= 2:
+        return {
+            "question": "Pilih salah satu opsi di bawah ini ya, Shisou~",
+            "options": options[:5],
+        }
+    return None
 
 
 def _build_plan_cmd(task: TaskRecord) -> list[str]:
