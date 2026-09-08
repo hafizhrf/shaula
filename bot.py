@@ -959,7 +959,7 @@ class ShaulaBot(commands.Bot):
                         from views.session_view import HapusThreadView
                         await _clear_active_button(sess)
                         await channel.send(
-                            f"💤 Session Claude ditutup otomatis (idle "
+                            f"💤 Session Shaula ditutup otomatis (idle "
                             f"{claude_session.IDLE_TIMEOUT // 60} menit), Shisou~",
                             view=HapusThreadView("Shaula") if sess.is_thread else None,
                         )
@@ -987,7 +987,7 @@ class ShaulaBot(commands.Bot):
                 _s = claude_session.get(channel_id)
                 extra = "Ada task yang lagi jalan — " if (_s and _s.busy) else ""
                 await message.channel.send(
-                    f"⚠️ {extra}session Claude masih aktif. Ketik `stop session` dulu, "
+                    f"⚠️ {extra}session Shaula masih aktif. Ketik `stop session` dulu, "
                     "baru Shaula bisa hapus threadnya ya, Shisou~"
                 )
                 return
@@ -1014,7 +1014,7 @@ class ShaulaBot(commands.Bot):
                 is_thread = isinstance(message.channel, discord.Thread)
                 note = " Task yang lagi jalan Shaula hentikan juga ya~" if killed else ""
                 await message.channel.send(
-                    f"🛑 Session Claude ditutup ya, Shisou~ ({turns} turn).{note}",
+                    f"🛑 Session Shaula ditutup ya, Shisou~ ({turns} turn).{note}",
                     view=HapusThreadView("Shaula") if is_thread else None,
                 )
                 await archive_thread(message.channel)

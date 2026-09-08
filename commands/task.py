@@ -59,7 +59,7 @@ async def archive_thread(channel) -> None:
 
 def _thread_name(description: str) -> str:
     name = " ".join(description.replace("__deploy__", "").split())[:90].strip()
-    return f"🧵 {name}" if name else "🧵 Claude session"
+    return f"🧵 {name}" if name else "🧵 Shaula session"
 
 
 async def _prefix_thread_id(thread, session_id: str, description: str) -> None:

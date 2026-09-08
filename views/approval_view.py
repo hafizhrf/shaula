@@ -46,7 +46,7 @@ def make_running_embed(task: TaskRecord) -> discord.Embed:
     desc = task.description if len(task.description) <= 500 else task.description[:497] + "..."
     return discord.Embed(
         title="⚙️ Running...",
-        description=f"**{desc}**\n\n_Starting Claude Code..._",
+        description=f"**{desc}**\n\n_Waking up Shaula... (✧ω✧)_",
         color=discord.Color.blue(),
     ).set_footer(text=f"Task {task.task_id[:8]}")
 
@@ -67,7 +67,7 @@ def make_done_embed(task: TaskRecord, output: str) -> discord.Embed:
 def make_failed_embed(task: TaskRecord, reason: str = "") -> discord.Embed:
     embed = discord.Embed(
         title="❌ Task Failed",
-        description=reason or "Claude Code returned an error.",
+        description=reason or "Shaula nemu error saat eksekusi.",
         color=discord.Color.red(),
     )
     embed.set_footer(text=f"Task {task.task_id[:8]}")

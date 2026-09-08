@@ -13,7 +13,7 @@ class StopTaskCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="stop-task", description="Stop a running Claude Code task and close the channel's session")
+    @app_commands.command(name="stop-task", description="Stop task yang sedang berjalan dan tutup session Shaula")
     @app_commands.describe(task_id="Task ID (first 8 chars shown in the task message). Leave empty to stop all running tasks.")
     async def stop_task(self, interaction: discord.Interaction, task_id: str = ""):
         running = task_store.list_running()
@@ -31,7 +31,7 @@ class StopTaskCommands(commands.Cog):
                 await _clear_active_button(closed_sess)
                 is_thread = isinstance(interaction.channel, discord.Thread)
                 await interaction.response.send_message(
-                    f"🛑 Session Claude ditutup ya, Shisou~ ({closed_sess.turns} turn).",
+                    f"🛑 Session Shaula ditutup ya, Shisou~ ({closed_sess.turns} turn).",
                     view=HapusThreadView("Shaula") if is_thread else None,
                 )
             else:
