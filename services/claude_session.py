@@ -76,17 +76,22 @@ def get_or_start(channel_id: int) -> Session:
 def stop(channel_id: int) -> Session | None:
     s = _sessions.pop(channel_id, None)
     if s:
-        logger.info("Stopped Claude session %s for channel %s (%d turns)",
+        # Break references to views and messages to allow immediate GC
+        s.active_msg = None
+        s.active_question_msg = None
+        s.active_question_view = None
+        logger.info("Stopped Claude/Antigravity session %s for channel %s (%d turns)",
                     s.session_id[:8], channel_id, s.turns)
     return s
 
 
 def kill_session_task(sess) -> bool:
-    """If a prompt is currently running in this session, terminate its Claude process.
+    """If a prompt is currently running in this session, terminate its process and all children.
 
     Returns True if a running task was actually killed. Shared by the `stop session`
     text command and the Stop-session button so both behave identically.
     """
+    import psutil
     import signal
 
     from services import task_store
@@ -97,9 +102,17 @@ def kill_session_task(sess) -> bool:
     if not task or not task.process_pid:
         return False
     try:
-        os.kill(task.process_pid, signal.SIGTERM)
-    except ProcessLookupError:
+        proc = psutil.Process(task.process_pid)
+        for child in proc.children(recursive=True):
+            try:
+                child.send_signal(signal.SIGTERM)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+        proc.send_signal(signal.SIGTERM)
+    except (psutil.NoSuchProcess, psutil.AccessDenied):
         pass
+    except Exception as e:
+        logger.warning("Error killing process tree for task %s: %s", task.task_id[:8], e)
     task_store.update_state(task.task_id, task_store.TaskState.CANCELLED)
     return True
 

@@ -359,6 +359,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
             await status_msg.edit(content="🛑 Task dihentikan (session ditutup).", embed=None)
         except discord.HTTPException:
             pass
+        task.output_lines.clear()
         return
 
     full_output = "".join(task.output_lines)
@@ -443,6 +444,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         )
         view.message = notice
         sess.active_msg = notice  # so the next turn can retire this button
+    task.output_lines.clear()
 
 
 class TaskCommands(commands.Cog):

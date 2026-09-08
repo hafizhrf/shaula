@@ -73,6 +73,19 @@ class TaskRecord:
 _tasks: dict[str, TaskRecord] = {}
 
 
+def prune_old_tasks(limit: int = 50) -> None:
+    """Keep in-memory task store bounded so long-running bots don't leak RAM."""
+    if len(_tasks) <= limit:
+        return
+    terminal_ids = [
+        tid for tid, t in _tasks.items()
+        if t.state in (TaskState.DONE, TaskState.FAILED, TaskState.CANCELLED)
+    ]
+    to_remove = len(_tasks) - limit
+    for tid in terminal_ids[:to_remove]:
+        _tasks.pop(tid, None)
+
+
 def create_task(
     description: str,
     creator_id: int,
@@ -80,6 +93,7 @@ def create_task(
     channel_id: int,
     project_dir: str = "",
 ) -> TaskRecord:
+    prune_old_tasks(50)
     task_id = str(uuid.uuid4())
     record = TaskRecord(
         task_id=task_id,
@@ -108,9 +122,24 @@ def list_running() -> list[TaskRecord]:
 
 
 def kill_all_running() -> list[int]:
+    import psutil
+    import signal
+
     pids = []
     for task in list_running():
         if task.process_pid:
             pids.append(task.process_pid)
+            try:
+                proc = psutil.Process(task.process_pid)
+                for child in proc.children(recursive=True):
+                    try:
+                        child.send_signal(signal.SIGTERM)
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+                proc.send_signal(signal.SIGTERM)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            except Exception:
+                pass
         update_state(task.task_id, TaskState.CANCELLED)
     return pids

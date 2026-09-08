@@ -1066,6 +1066,10 @@ class ShaulaBot(commands.Bot):
             await message.channel.send("🗑️ Understood Shisou, Shaula is deleting this thread now~ bye-bye! ✨")
             try:
                 await message.channel.delete()
+                project_dir = os.path.join(getattr(config, "PROJECTS_BASE_DIR", "/opt/agent/projects"), f"session-{channel_id}")
+                if os.path.isdir(project_dir):
+                    import shutil
+                    shutil.rmtree(project_dir, ignore_errors=True)
             except discord.Forbidden:
                 await message.channel.send(
                     "⚠️ Shaula does not have `Manage Threads` permission to delete this thread."

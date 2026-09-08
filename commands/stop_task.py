@@ -52,11 +52,23 @@ class StopTaskCommands(commands.Cog):
         stopped = []
         for task in targets:
             if task.process_pid:
+                import psutil
                 try:
-                    os.kill(task.process_pid, signal.SIGTERM)
+                    proc = psutil.Process(task.process_pid)
+                    for child in proc.children(recursive=True):
+                        try:
+                            child.send_signal(signal.SIGTERM)
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
+                    proc.send_signal(signal.SIGTERM)
                     stopped.append(f"`{task.task_id[:8]}` — {task.description[:60]}")
-                except ProcessLookupError:
+                except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
+                except Exception:
+                    try:
+                        os.kill(task.process_pid, signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
             task_store.update_state(task.task_id, TaskState.CANCELLED)
 
         if stopped:

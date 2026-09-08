@@ -66,6 +66,10 @@ class HapusThreadView(discord.ui.View):
         try:
             await channel.send(f"🗑️ Alright Shisou, {self.persona} is deleting this thread now~ Bye bye! ✨ (✧ω✧)")
             await channel.delete()
+            project_dir = os.path.join(getattr(config, "PROJECTS_BASE_DIR", "/opt/agent/projects"), f"session-{channel.id}")
+            if os.path.isdir(project_dir):
+                import shutil
+                shutil.rmtree(project_dir, ignore_errors=True)
         except discord.Forbidden:
             await channel.send(
                 f"⚠️ {self.persona} doesn't have `Manage Threads` permission to delete this thread. "
