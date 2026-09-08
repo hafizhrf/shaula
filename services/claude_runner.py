@@ -1046,6 +1046,22 @@ async def run_execution(
                                 task.output_lines.append(tdelta)
                                 accumulated += tdelta
                         u = su.get("usage") or {}
+                        if u:
+                            inp = int(u.get("input_tokens") or 0)
+                            out = int(u.get("output_tokens") or 0)
+                            tot = int(u.get("total_tokens") or (inp + out))
+                            cache = int(u.get("cache_read_tokens") or 0)
+                            if inp or out or tot:
+                                task.prompt_tokens = inp
+                                task.completion_tokens = out
+                                task.total_tokens = tot
+                                non_cached = max(0, inp - cache)
+                                calc_cost = (
+                                    (non_cached * 0.15 / 1_000_000)
+                                    + (cache * 0.0375 / 1_000_000)
+                                    + (out * 0.60 / 1_000_000)
+                                )
+                                task.cost_usd = round(calc_cost, 6)
                         ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_tokens") or 0)
                         if ctx > task.context_tokens:
                             task.context_tokens = ctx
@@ -1107,6 +1123,13 @@ async def run_execution(
                     )
                     if ctx > task.context_tokens:
                         task.context_tokens = ctx
+                    if u:
+                        inp = int(u.get("input_tokens") or 0) + int(u.get("cache_read_input_tokens") or 0) + int(u.get("cache_creation_input_tokens") or 0)
+                        out = int(u.get("output_tokens") or 0)
+                        if inp or out:
+                            task.prompt_tokens = inp
+                            task.completion_tokens = out
+                            task.total_tokens = inp + out
                 elif etype == "tool_result":
                     # Tool output may contain auth prompts from shell commands
                     for block in event.get("content", []):

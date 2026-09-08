@@ -21,3 +21,11 @@ data/
 .vscode/
 .idea/
 .DS_Store
+
+# Frontend / Node
+node_modules/
+.vite/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
