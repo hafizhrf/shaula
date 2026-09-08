@@ -542,6 +542,92 @@ async def generate_final_plan(
         return None
 
 
+async def generate_revised_plan(
+    task: TaskRecord,
+    previous_plan: str,
+    revision_instruction: str,
+    qna: list[dict],
+    config_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Revises an existing implementation plan based on Shisou's feedback / modifications.
+    """
+    qna_text = ""
+    if qna:
+        qna_lines = []
+        for item in qna:
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            qna_lines.append(f"- Question: {q}\n  Answer from Shisou: {a}")
+        qna_text = "\n\nDecisions & Design Choices from Shisou:\n" + "\n".join(qna_lines)
+
+    prompt = (
+        f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+        f"You are Shaula revising an Implementation Plan for Shisou based on their new feedback.\n\n"
+        f"Original Task:\n{task.description}\n"
+        f"{qna_text}\n\n"
+        f"Previous Implementation Plan:\n{previous_plan}\n\n"
+        f"New Feedback / Revision Request from Shisou:\n\"{revision_instruction}\"\n\n"
+        "Instructions:\n"
+        "- Thoroughly revise the Implementation Plan to incorporate Shisou's modifications.\n"
+        "- Default language is English. If the revision request or original task is in Indonesian, write in Indonesian.\n"
+        "- Structure the plan cleanly with Markdown headings:\n"
+        "  1. 🎯 Goal Summary\n"
+        "  2. 🏗️ Architecture & Design (incorporating Shisou's choices & latest feedback)\n"
+        "  3. 📝 Modified Files & Components\n"
+        "  4. 🧪 Verification Steps\n"
+        "- Use Shaula's persona in the introductory and concluding remarks.\n"
+        "- Do NOT execute the changes yet — only formulate the revised plan."
+    )
+
+    if config.CLI_ENGINE == "agy":
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+    else:
+        cmd = [
+            config.CLAUDE_BIN,
+            "--print",
+            "--output-format", "text",
+            "--permission-mode", "auto",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+            prompt,
+        ]
+        if config.CLAUDE_MODEL:
+            cmd += ["--model", config.CLAUDE_MODEL]
+
+    env = {**os.environ}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if config.ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=task.project_dir,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        if proc.returncode != 0:
+            logger.error("Plan revision failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
+            return None
+        return stdout.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        logger.error("generate_revised_plan error: %s", e)
+        return None
+
+
 
 # ── Execution ─────────────────────────────────────────────────────────────────
 

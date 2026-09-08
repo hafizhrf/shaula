@@ -707,12 +707,22 @@ class DevOpsBot(commands.Bot):
                     return
             return
 
-        # Priority 1.5: interactive /plan question waiting for user choice or custom input
-        from views.plan_view import get_active_plan_question
+        # Priority 1.5: interactive /plan question or execute confirmation
+        from views.plan_view import get_active_plan_question, get_active_plan_execute
         active_plan_q = get_active_plan_question(channel_id)
         if active_plan_q is not None and not active_plan_q.future.done():
             accepted = await active_plan_q.handle_custom_input(message.content, message.author)
             if accepted:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                return
+
+        active_plan_exec = get_active_plan_execute(channel_id)
+        if active_plan_exec is not None:
+            handled = await active_plan_exec.handle_chat_input(message)
+            if handled:
                 try:
                     await message.add_reaction("✅")
                 except Exception:
@@ -1100,7 +1110,7 @@ class ShaulaBot(commands.Bot):
                 return
 
         # Priority 0.8: active /plan interactive question waiting for user choice or custom input
-        from views.plan_view import get_active_plan_question
+        from views.plan_view import get_active_plan_question, get_active_plan_execute
         active_plan_q = get_active_plan_question(channel_id)
         if active_plan_q is not None and not active_plan_q.future.done():
             if _is_session_stop(message.content):
@@ -1112,6 +1122,17 @@ class ShaulaBot(commands.Bot):
                 return
             accepted = await active_plan_q.handle_custom_input(message.content, message.author)
             if accepted:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                return
+
+        # Active /plan execute confirmation waiting for execution or revision
+        active_plan_exec = get_active_plan_execute(channel_id)
+        if active_plan_exec is not None:
+            handled = await active_plan_exec.handle_chat_input(message)
+            if handled:
                 try:
                     await message.add_reaction("✅")
                 except Exception:
@@ -1193,6 +1214,12 @@ class ShaulaBot(commands.Bot):
                 async with message.channel.typing():
                     await _continue_session(message)
                 return
+        if isinstance(message.channel, discord.Thread) and (message.channel.name or "").startswith("📋 Plan:"):
+            await message.channel.send(
+                "⏳ Shaula is currently generating or updating the plan, Shisou! Please hold on a moment~ (✧ω✧)"
+            )
+            return
+
         # Not a revivable session thread → Shaula stays quiet.
 
 

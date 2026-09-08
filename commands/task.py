@@ -55,14 +55,11 @@ async def _clear_active_button(sess=None, channel=None) -> None:
         sess.active_question_view = None
         if q_view is not None and not q_view.is_finished():
             q_view.stop()
-            for item in q_view.children:
-                if isinstance(item, discord.ui.Button):
-                    item.disabled = True
             if q_msg is not None:
                 try:
                     await q_msg.edit(
                         content=f"{q_msg.content}\n\n*(answered manually by Shisou)*",
-                        view=q_view,
+                        view=None,
                     )
                 except (discord.HTTPException, discord.Forbidden):
                     pass
@@ -79,17 +76,19 @@ async def _clear_active_button(sess=None, channel=None) -> None:
 
                 has_stop = False
                 has_active_question = False
+                has_execute_plan = False
                 for row in old_msg.components:
                     for comp in getattr(row, "children", []):
                         cid = getattr(comp, "custom_id", "") or ""
                         lbl = getattr(comp, "label", "") or ""
                         if "session:stop" in cid or "Stop session" in lbl:
                             has_stop = True
-                        elif "opt_" in cid or "choice" in cid.lower():
-                            if not getattr(comp, "disabled", False):
-                                has_active_question = True
+                        elif "opt_" in cid or "choice" in cid.lower() or "plan_opt" in cid:
+                            has_active_question = True
+                        elif "execute" in cid.lower() or "cancel" in cid.lower() or "plan_" in cid:
+                            has_execute_plan = True
 
-                if has_stop:
+                if has_stop or has_execute_plan:
                     try:
                         await old_msg.edit(view=None)
                     except (discord.HTTPException, discord.Forbidden):
@@ -97,13 +96,10 @@ async def _clear_active_button(sess=None, channel=None) -> None:
 
                 if has_active_question:
                     try:
-                        view = discord.ui.View.from_message(old_msg)
-                        for child in view.children:
-                            child.disabled = True
                         content = old_msg.content or ""
-                        if "*(answered" not in content and "*(⏰" not in content and "👉 **Selected" not in content:
+                        if "*(answered" not in content and "*(⏰" not in content and "👉" not in content:
                             content = f"{content}\n\n*(answered manually by Shisou)*"
-                        await old_msg.edit(content=content, view=view)
+                        await old_msg.edit(content=content, view=None)
                     except (discord.HTTPException, discord.Forbidden):
                         pass
         except Exception as e:
@@ -792,10 +788,12 @@ async def run_plan_flow(
             ),
         )
 
+    current_plan = plan_text
+
     async def _on_confirm_execute(exec_channel):
         exec_task = task_store.create_task(
             description=(
-                f"Execute the following plan approved by Shisou:\n\n{plan_text}"
+                f"Execute the following plan approved by Shisou:\n\n{current_plan}"
             ),
             creator_id=creator_id,
             guild_id=guild_id,
@@ -804,14 +802,88 @@ async def run_plan_flow(
         claude_runner.ensure_project_dir(exec_task)
         await _execute_and_stream(exec_task, exec_channel, config_dir=config_dir)
 
+    async def _on_plan_revision(rev_channel, revision_text: str, author: discord.User | discord.Member):
+        nonlocal current_plan
+        status_msg = await rev_channel.send(
+            f"🔄 **Shaula is updating the Implementation Plan based on Shisou's feedback:**\n"
+            f"> *\"{revision_text}\"*\n\n"
+            f"*Please wait a moment while Shaula refines the battle plan, Shisou~ (๑•̀ㅂ•́)و✧*"
+        )
+        qna.append({"question": "Revision / Modification requested by Shisou", "answer": revision_text})
+        new_plan = await claude_runner.generate_revised_plan(
+            task=task,
+            previous_plan=current_plan,
+            revision_instruction=revision_text,
+            qna=qna,
+            config_dir=config_dir,
+        )
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if not new_plan:
+            await rev_channel.send(
+                "⚠️ Sorry Shisou, Shaula couldn't update the plan. "
+                "You can still execute the previous plan or type another feedback, Shisou~"
+            )
+            fallback_view = PlanExecuteView(
+                creator_id=creator_id,
+                on_execute=_on_confirm_execute,
+                channel_id=rev_channel.id,
+                on_chat_input=_on_plan_revision,
+                persona=persona,
+                timeout=900.0,
+            )
+            f_msg = await rev_channel.send(
+                "👇 **Should Shaula execute the plan, or would Shisou like to adjust anything else?** (✧ω✧)",
+                view=fallback_view,
+            )
+            fallback_view.message = f_msg
+            return
+
+        current_plan = new_plan
+        task.plan_text = new_plan
+
+        header = "📋 **Revised Implementation Plan is Ready, Shisou!** ٩(◕‿◕｡)۶\n\n"
+        if len(new_plan) + len(header) <= 1900:
+            await rev_channel.send(f"{header}{new_plan}")
+        else:
+            preview = new_plan[:1200]
+            await rev_channel.send(
+                f"{header}>>> {preview}...\n\n*(Full plan is quite long, Shaula attached the `.md` file below, Shisou~)*",
+                file=discord.File(
+                    io.BytesIO(new_plan.encode("utf-8")),
+                    filename=f"plan_{task.task_id[:8]}_revised.md",
+                ),
+            )
+
+        rev_view = PlanExecuteView(
+            creator_id=creator_id,
+            on_execute=_on_confirm_execute,
+            channel_id=rev_channel.id,
+            on_chat_input=_on_plan_revision,
+            persona=persona,
+            timeout=900.0,
+        )
+        r_msg = await rev_channel.send(
+            "👇 **What do you think, Shisou? Should Shaula execute this revised plan now?** (✧ω✧)\n"
+            "*Click Execute Plan, click Cancel, or type further feedback directly in this thread!*",
+            view=rev_view,
+        )
+        rev_view.message = r_msg
+
     exec_view = PlanExecuteView(
         creator_id=creator_id,
         on_execute=_on_confirm_execute,
+        channel_id=thread.id,
+        on_chat_input=_on_plan_revision,
         persona=persona,
         timeout=900.0,
     )
     exec_msg = await thread.send(
-        "👇 **What do you think, Shisou? Should Shaula execute this plan now?** (✧ω✧)",
+        "👇 **What do you think, Shisou? Should Shaula execute this plan now?** (✧ω✧)\n"
+        "*Click Execute Plan, click Cancel, or type your adjustments directly in this thread, Shisou~*",
         view=exec_view,
     )
     exec_view.message = exec_msg

@@ -18,6 +18,9 @@ NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 # Active question registry for /plan mode: channel_id -> PlanQuestionView
 _active_plan_questions: dict[int, "PlanQuestionView"] = {}
 
+# Active execute confirmation registry for /plan mode: channel_id -> PlanExecuteView
+_active_plan_executes: dict[int, "PlanExecuteView"] = {}
+
 
 def get_active_plan_question(channel_id: int) -> Optional["PlanQuestionView"]:
     return _active_plan_questions.get(channel_id)
@@ -31,6 +34,20 @@ def register_plan_question(channel_id: int, view: "PlanQuestionView") -> None:
 def unregister_plan_question(channel_id: int) -> None:
     if channel_id:
         _active_plan_questions.pop(channel_id, None)
+
+
+def get_active_plan_execute(channel_id: int) -> Optional["PlanExecuteView"]:
+    return _active_plan_executes.get(channel_id)
+
+
+def register_plan_execute(channel_id: int, view: "PlanExecuteView") -> None:
+    if channel_id:
+        _active_plan_executes[channel_id] = view
+
+
+def unregister_plan_execute(channel_id: int) -> None:
+    if channel_id:
+        _active_plan_executes.pop(channel_id, None)
 
 
 class CustomAnswerModal(discord.ui.Modal, title="Custom Answer"):
@@ -166,7 +183,7 @@ class PlanQuestionView(discord.ui.View):
             selected_desc = f"**{choice_text}**" if choice_idx >= 0 else "*As Shaula wishes*"
             await interaction.response.edit_message(
                 content=f"{interaction.message.content}\n\n👉 **Selected by Shisou:** {selected_desc}",
-                view=self,
+                view=None,
             )
 
             if not self.future.done():
@@ -181,19 +198,13 @@ class PlanQuestionView(discord.ui.View):
         self.stop()
         unregister_plan_question(self.channel_id)
 
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-                if item.custom_id == "plan_opt_custom":
-                    item.style = discord.ButtonStyle.success
-
         clean_text = text.strip()
         display_text = clean_text if len(clean_text) <= 200 else clean_text[:197] + "..."
         if self.message:
             try:
                 await self.message.edit(
                     content=f"{self.message.content}\n\n👉 **Custom answer by Shisou:** **{display_text}**",
-                    view=self,
+                    view=None,
                 )
             except discord.HTTPException:
                 pass
@@ -204,14 +215,11 @@ class PlanQuestionView(discord.ui.View):
 
     async def on_timeout(self):
         unregister_plan_question(self.channel_id)
-        for item in self.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
         if self.message:
             try:
                 await self.message.edit(
                     content=f"{self.message.content}\n\n*(⏰ Time's up — Shaula will pick the recommended option, Shisou~)*",
-                    view=self,
+                    view=None,
                 )
             except discord.HTTPException:
                 pass
@@ -222,26 +230,38 @@ class PlanQuestionView(discord.ui.View):
 
 
 class PlanExecuteView(discord.ui.View):
-    """Attached to the final plan message to confirm execution or cancel."""
+    """Attached to the final plan message to confirm execution, cancel, or receive revisions."""
 
     def __init__(
         self,
         creator_id: int,
         on_execute: Callable,
+        channel_id: int = 0,
+        on_chat_input: Optional[Callable] = None,
         persona: str = "Shaula",
         timeout: float = 900.0,  # 15 mins
     ):
         super().__init__(timeout=timeout)
+        self.channel_id = channel_id
         self.creator_id = creator_id
         self.on_execute = on_execute
+        self.on_chat_input = on_chat_input
         self.persona = persona
         self.message: Optional[discord.Message] = None
 
-    def _can_interact(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.creator_id:
+        if channel_id:
+            register_plan_execute(channel_id, self)
+
+    def _can_interact_user(self, user: discord.User | discord.Member) -> bool:
+        if user.id == self.creator_id:
             return True
-        user_role_ids = {r.id for r in interaction.user.roles}
-        return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
+        if hasattr(user, "roles"):
+            user_role_ids = {r.id for r in user.roles}
+            return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
+        return False
+
+    def _can_interact(self, interaction: discord.Interaction) -> bool:
+        return self._can_interact_user(interaction.user)
 
     @discord.ui.button(label="Execute Plan", style=discord.ButtonStyle.success, emoji="🚀")
     async def execute_button(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -253,10 +273,13 @@ class PlanExecuteView(discord.ui.View):
             return
 
         self.stop()
-        for item in self.children:
-            item.disabled = True
+        unregister_plan_execute(self.channel_id)
 
-        await interaction.response.edit_message(view=self)
+        try:
+            await interaction.response.edit_message(view=None)
+        except Exception:
+            pass
+
         await interaction.channel.send(
             f"🚀 **Plan approved by Shisou {interaction.user.mention}!**\n"
             f"Shaula is starting execution right now~ Ganbarimasu! (๑•̀ㅂ•́)و✧"
@@ -273,18 +296,65 @@ class PlanExecuteView(discord.ui.View):
             return
 
         self.stop()
-        for item in self.children:
-            item.disabled = True
+        unregister_plan_execute(self.channel_id)
 
-        await interaction.response.edit_message(view=self)
+        try:
+            await interaction.response.edit_message(view=None)
+        except Exception:
+            pass
+
         await interaction.channel.send(f"🛑 Plan cancelled by {interaction.user.mention}, Shisou~")
 
-    async def on_timeout(self):
-        for item in self.children:
-            item.disabled = True
+    async def handle_chat_input(self, message: discord.Message) -> bool:
+        if not self._can_interact_user(message.author):
+            return False
+
+        self.stop()
+        unregister_plan_execute(self.channel_id)
+
+        # Ensure the execute and cancel buttons vanish immediately
         if self.message:
             try:
-                await self.message.edit(view=self)
+                await self.message.edit(view=None)
+            except discord.HTTPException:
+                pass
+
+        import re
+        text = message.content.strip()
+        approval_re = re.compile(
+            r"^(gas|execute|laksanakan|jalankan|gaspol|oke?\s*gas|lanjut(kan)?|yes|yep|approve|run)\b",
+            re.IGNORECASE,
+        )
+        cancel_re = re.compile(
+            r"^(cancel|batal|stop|gajadi|abort)\b",
+            re.IGNORECASE,
+        )
+
+        if approval_re.match(text):
+            await message.channel.send(
+                f"🚀 **Plan approved by Shisou {message.author.mention}!**\n"
+                f"Shaula is starting execution right now~ Ganbarimasu! (๑•̀ㅂ•́)و✧"
+            )
+            asyncio.create_task(self.on_execute(message.channel))
+            return True
+
+        if cancel_re.match(text):
+            await message.channel.send(
+                f"🛑 Plan cancelled by {message.author.mention}, Shisou~"
+            )
+            return True
+
+        if self.on_chat_input:
+            asyncio.create_task(self.on_chat_input(message.channel, text, message.author))
+            return True
+
+        return False
+
+    async def on_timeout(self):
+        unregister_plan_execute(self.channel_id)
+        if self.message:
+            try:
+                await self.message.edit(view=None)
             except discord.HTTPException:
                 pass
 
