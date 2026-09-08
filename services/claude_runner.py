@@ -311,6 +311,163 @@ async def run_planning(task: TaskRecord) -> Optional[str]:
     return plan
 
 
+async def generate_plan_questions(
+    task: TaskRecord, config_dir: Optional[str] = None
+) -> list[dict]:
+    """
+    Analyzes task requirements and codebase, generating 1 to 4 clarifying multiple-choice questions.
+    Returns a list of dicts: [{"id": 1, "question": "...", "options": ["opt1", "opt2", ...]}]
+    """
+    prompt = (
+        f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+        f"You are Shaula in interactive planning mode for Shisou.\n"
+        f"Task to plan: {task.description}\n\n"
+        "Analyze the task requirements and codebase. If there are key design decisions, "
+        "architectural trade-offs, technology choices, or ambiguities that Shisou needs to decide on, "
+        "formulate 1 to 3 multiple-choice clarifying questions.\n"
+        "Rules:\n"
+        "- Write the questions in Shaula's character (affectionate, calling user Shisou, enthusiastic).\n"
+        "- Provide 2 to 4 clear, distinct options per question.\n"
+        "- Each option should be concise (fit nicely on a button or short text).\n"
+        "- If the task is already completely explicit, trivial, or has no sensible choices, return an empty questions list.\n"
+        "- Output ONLY valid JSON in this exact structure without markdown backticks:\n"
+        '{"questions": [{"id": 1, "question": "Question text...", "options": ["Option 1", "Option 2"]}]}'
+    )
+
+    if config.CLI_ENGINE == "agy":
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+    else:
+        cmd = [
+            config.CLAUDE_BIN,
+            "--print",
+            "--output-format", "text",
+            "--permission-mode", "auto",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+            prompt,
+        ]
+        if config.CLAUDE_MODEL:
+            cmd += ["--model", config.CLAUDE_MODEL]
+
+    env = {**os.environ}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if config.ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=task.project_dir,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        raw = stdout.decode("utf-8", errors="replace").strip()
+        # Find JSON object
+        match = re.search(r'\{.*"questions"\s*:\s*\[.*\]\s*\}', raw, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return data.get("questions", [])
+        data = json.loads(raw)
+        return data.get("questions", [])
+    except Exception as e:
+        logger.warning("Could not generate plan questions: %s", e)
+        return []
+
+
+async def generate_final_plan(
+    task: TaskRecord,
+    qna: list[dict],
+    config_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Generates a full implementation plan taking into account Shisou's answers to the questions.
+    """
+    qna_text = ""
+    if qna:
+        qna_lines = []
+        for item in qna:
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            qna_lines.append(f"- Pertanyaan: {q}\n  Jawaban Shisou: {a}")
+        qna_text = "\n\nKeputusan & Pilihan Desain dari Shisou:\n" + "\n".join(qna_lines)
+
+    prompt = (
+        f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+        f"You are Shaula creating a comprehensive Implementation Plan for Shisou.\n\n"
+        f"Task:\n{task.description}\n"
+        f"{qna_text}\n\n"
+        "Instructions:\n"
+        "- Create a detailed, actionable Implementation Plan.\n"
+        "- Structure the plan cleanly with Markdown headings:\n"
+        "  1. 🎯 Ringkasan Tujuan (Goal Summary)\n"
+        "  2. 🏗️ Arsitektur & Desain Solusi (berdasarkan pilihan Shisou)\n"
+        "  3. 📝 File & Komponen yang Akan Diubah/Dibuat\n"
+        "  4. 🧪 Langkah Pengujian & Verifikasi (Verification Steps)\n"
+        "- Use Shaula's persona in the introductory and concluding remarks.\n"
+        "- Do NOT execute the changes yet — only formulate the plan."
+    )
+
+    if config.CLI_ENGINE == "agy":
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+    else:
+        cmd = [
+            config.CLAUDE_BIN,
+            "--print",
+            "--output-format", "text",
+            "--permission-mode", "auto",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+            prompt,
+        ]
+        if config.CLAUDE_MODEL:
+            cmd += ["--model", config.CLAUDE_MODEL]
+
+    env = {**os.environ}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if config.ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=task.project_dir,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        if proc.returncode != 0:
+            logger.error("Planning failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
+            return None
+        return stdout.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        logger.error("generate_final_plan error: %s", e)
+        return None
+
+
+
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 async def run_execution(

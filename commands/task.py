@@ -18,6 +18,7 @@ from views.approval_view import (
     make_plan_embed,
     make_running_embed,
 )
+from views.plan_view import PlanExecuteView, PlanQuestionView
 from views.session_view import StopSessionView
 
 logger = logging.getLogger(__name__)
@@ -367,6 +368,35 @@ class TaskCommands(commands.Cog):
         await self.run_cmd(interaction, description, kantor=True)
 
     @app_commands.command(
+        name="plan",
+        description="Rencanakan tugas bersama Shaula dengan pertanyaan klarifikasi interaktif",
+    )
+    @app_commands.describe(
+        description="Apa yang ingin direncanakan?",
+        kantor="Jalanin pakai akun kantor (khusus fallback engine Claude)",
+    )
+    async def plan_cmd(
+        self, interaction: discord.Interaction, description: str, kantor: bool = False
+    ):
+        await interaction.response.defer()
+        engine_str = f" [{config.CLI_ENGINE}]" if config.CLI_ENGINE else ""
+        await interaction.followup.send(
+            f"📋 Merencanakan task{engine_str} — Shaula buka thread untuk diskusi & klarifikasi ya, Shisou~\n`{description[:120]}`"
+        )
+        account_config_dir = (
+            config.CLAUDE_KANTOR_CONFIG_DIR
+            if (kantor and config.CLI_ENGINE == "claude")
+            else None
+        )
+        await run_plan_flow(
+            description=description,
+            creator_id=interaction.user.id,
+            guild_id=interaction.guild_id,
+            channel=interaction.channel,
+            config_dir=account_config_dir,
+        )
+
+    @app_commands.command(
         name="run-file",
         description="Baca plan dari file (.md dll) lalu jalanin sebagai task Shaula",
     )
@@ -489,6 +519,152 @@ async def run_task_flow(
         note = " *(operasi berisiko — Shaula tetap jalanin auto; tekan 🛑 Stop kalau perlu hentikan)*"
     await channel.send(f"{risk_icon} Running: `{description[:120]}`{note}")
     await _execute_and_stream(record, channel)
+
+
+async def run_plan_flow(
+    description: str,
+    creator_id: int,
+    guild_id: int,
+    channel: discord.TextChannel,
+    config_dir: str | None = None,
+) -> None:
+    """
+    Interactive planning flow:
+    1. Opens/uses a dedicated thread for the plan.
+    2. Analyzes codebase and asks Shisou clarifying multiple-choice questions via buttons.
+    3. Synthesizes answers into a full implementation plan.
+    4. Presents the plan and provides a 1-click execution button.
+    """
+    from services import bots
+    channel = bots.shaula_channel(channel)
+    task = task_store.create_task(
+        description=description,
+        creator_id=creator_id,
+        guild_id=guild_id,
+        channel_id=channel.id,
+    )
+    claude_runner.ensure_project_dir(task)
+
+    thread = await _ensure_session_thread(channel, task)
+    if isinstance(thread, discord.Thread):
+        desc_clean = " ".join(description.split())[:80]
+        try:
+            await thread.edit(name=f"📋 Plan: {desc_clean}")
+        except Exception:
+            pass
+
+    persona = _persona()
+    init_msg = await thread.send(
+        f"📋 **Shaula lagi pelajari kebutuhan Shisou dan nyiapin opsi/pertanyaan dulu ya~** ✨\n"
+        f"Mohon tunggu sebentar..."
+    )
+
+    questions = await claude_runner.generate_plan_questions(task, config_dir=config_dir)
+
+    qna = []
+    if questions:
+        await init_msg.edit(
+            content=(
+                f"✨ Shaula udah analisis kodenya! Ada **{len(questions)} hal** "
+                f"yang perlu didiskusikan biar rancangan solusinya pas. Silakan pilih opsi di bawah ya, Shisou~ 👇"
+            )
+        )
+        for idx, q_item in enumerate(questions):
+            q_text = q_item.get("question", "").strip()
+            opts = q_item.get("options", [])
+            if not q_text or not opts:
+                continue
+
+            num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+            formatted_opts = []
+            for o_idx, opt in enumerate(opts[:4]):
+                emo = num_emojis[o_idx] if o_idx < len(num_emojis) else "🔹"
+                formatted_opts.append(f"{emo} {opt}")
+
+            options_display = "\n".join(formatted_opts)
+            msg_content = (
+                f"**Pertanyaan {idx + 1} dari {len(questions)}:**\n"
+                f"> **{q_text}**\n\n"
+                f"{options_display}"
+            )
+
+            fut = asyncio.get_running_loop().create_future()
+            view = PlanQuestionView(
+                creator_id=creator_id,
+                options=opts,
+                future=fut,
+                persona=persona,
+                timeout=300.0,
+            )
+            q_msg = await thread.send(content=msg_content, view=view)
+            view.message = q_msg
+
+            try:
+                selected_answer = await fut
+            except Exception:
+                selected_answer = opts[0] if opts else "Terserah Shaula"
+
+            qna.append({"question": q_text, "answer": selected_answer})
+    else:
+        await init_msg.edit(
+            content=(
+                "💡 Kebutuhan task Shisou sudah sangat jelas! "
+                "Shaula langsung susun detail Implementation Plan-nya ya~ 🚀"
+            )
+        )
+
+    plan_status_msg = await thread.send("📝 **Sedang menyusun Implementation Plan lengkap...**")
+    plan_text = await claude_runner.generate_final_plan(task, qna, config_dir=config_dir)
+
+    if not plan_text:
+        await plan_status_msg.edit(
+            content="⚠️ Maaf ya Shisou, Shaula gagal menyusun plan. "
+            "Shisou bisa coba jalankan langsung via `/run` atau ulangi lagi ya~"
+        )
+        return
+
+    task.plan_text = plan_text
+    try:
+        await plan_status_msg.delete()
+    except Exception:
+        pass
+
+    header = "📋 **Implementation Plan Siap, Shisou!** ٩(◕‿◕｡)۶\n\n"
+    if len(plan_text) + len(header) <= 1900:
+        await thread.send(f"{header}{plan_text}")
+    else:
+        preview = plan_text[:1200]
+        await thread.send(
+            f"{header}>>> {preview}...\n\n*(Plan lengkap cukup panjang, Shaula lampirkan file `.md` di bawah ya~)*",
+            file=discord.File(
+                io.BytesIO(plan_text.encode("utf-8")),
+                filename=f"plan_{task.task_id[:8]}.md",
+            ),
+        )
+
+    async def _on_confirm_execute(exec_channel):
+        exec_task = task_store.create_task(
+            description=(
+                f"Laksanakan rencana berikut yang telah disetujui Shisou:\n\n{plan_text}"
+            ),
+            creator_id=creator_id,
+            guild_id=guild_id,
+            channel_id=exec_channel.id,
+        )
+        claude_runner.ensure_project_dir(exec_task)
+        await _execute_and_stream(exec_task, exec_channel, config_dir=config_dir)
+
+    exec_view = PlanExecuteView(
+        creator_id=creator_id,
+        on_execute=_on_confirm_execute,
+        persona=persona,
+        timeout=900.0,
+    )
+    exec_msg = await thread.send(
+        "👇 **Gimana Shisou? Mau langsung Shaula kerjain sesuai plan di atas?**",
+        view=exec_view,
+    )
+    exec_view.message = exec_msg
 
 
 async def setup(bot: commands.Bot):
