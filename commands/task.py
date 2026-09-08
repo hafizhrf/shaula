@@ -50,6 +50,21 @@ def _make_plan_stream_callback(status_msg: discord.Message, label: str):
     return on_chunk
 
 
+def _make_plan_activity_callback(status_msg: discord.Message, label: str):
+    """Show native Agy tool activity while a plan is being analyzed or drafted."""
+    last_edit = 0.0
+
+    async def on_activity(activity: str) -> None:
+        nonlocal last_edit
+        now = asyncio.get_running_loop().time()
+        if now - last_edit < config.STREAM_EDIT_INTERVAL_SECONDS:
+            return
+        last_edit = now
+        await status_msg.edit(content=f"🔎 **{label}...**\n{activity}")
+
+    return on_activity
+
+
 async def _clear_active_button(sess=None, channel=None) -> None:
     """Retire the previous 'Session active' notice's Stop button and disable question buttons.
 
@@ -722,7 +737,11 @@ async def run_plan_flow(
         f"Please wait a moment, Shisou~ (✧ω✧)"
     )
 
-    questions = await claude_runner.generate_plan_questions(task, config_dir=config_dir)
+    questions = await claude_runner.generate_plan_questions(
+        task,
+        config_dir=config_dir,
+        on_activity=_make_plan_activity_callback(init_msg, "Analyzing requirements"),
+    )
 
     qna = []
     if questions:
@@ -791,6 +810,7 @@ async def run_plan_flow(
         qna,
         config_dir=config_dir,
         on_chunk=_make_plan_stream_callback(plan_status_msg, "Drafting Implementation Plan"),
+        on_activity=_make_plan_activity_callback(plan_status_msg, "Drafting Implementation Plan"),
     )
 
     if not plan_text:
@@ -848,6 +868,7 @@ async def run_plan_flow(
             qna=qna,
             config_dir=config_dir,
             on_chunk=_make_plan_stream_callback(status_msg, "Updating revised plan"),
+            on_activity=_make_plan_activity_callback(status_msg, "Updating revised plan"),
         )
         try:
             await status_msg.delete()

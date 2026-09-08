@@ -408,7 +408,9 @@ async def run_planning(task: TaskRecord) -> Optional[str]:
 
 
 async def generate_plan_questions(
-    task: TaskRecord, config_dir: Optional[str] = None
+    task: TaskRecord, config_dir: Optional[str] = None,
+    on_chunk: Callable | None = None,
+    on_activity: Callable | None = None,
 ) -> list[dict]:
     """
     Analyzes task requirements and codebase for only the decisions that require user input.
@@ -438,7 +440,7 @@ async def generate_plan_questions(
         cmd = [
             config.AGY_BIN,
             "-p", prompt,
-            "--output-format", "text",
+            "--output-format", "stream-json",
             "--dangerously-skip-permissions",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -449,7 +451,8 @@ async def generate_plan_questions(
         cmd = [
             config.CLAUDE_BIN,
             "--print",
-            "--output-format", "text",
+            "--verbose",
+            "--output-format", "stream-json",
             "--permission-mode", "auto",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",
@@ -473,10 +476,14 @@ async def generate_plan_questions(
             env=env,
             start_new_session=True,
         )
-        stdout, stderr = await communicate_with_timeout(
-            proc, timeout=90, label=f"plan-question analysis {task.task_id[:8]}"
+        raw, stderr = await _read_plan_stream(
+            proc,
+            on_chunk=on_chunk,
+            on_activity=on_activity,
+            timeout=min(300, config.PLAN_TIMEOUT_SECONDS),
+            label=f"plan-question analysis {task.task_id[:8]}",
         )
-        raw = stdout.decode("utf-8", errors="replace").strip()
+        raw = raw.strip()
         # Find JSON object
         match = re.search(r'\{.*"questions"\s*:\s*\[.*\]\s*\}', raw, re.DOTALL)
         if match:
@@ -545,10 +552,27 @@ def _plan_stream_payload(line: str) -> tuple[str, str]:
     return "", ""
 
 
+def _plan_stream_activity(line: str) -> str:
+    """Describe an active Agy tool step without adding it to the final plan text."""
+    try:
+        event = json.loads(line)
+    except json.JSONDecodeError:
+        return ""
+    if event.get("event") != "step_update":
+        return ""
+    update = event.get("step_update", {}) or {}
+    if update.get("step_type") != "tool" or update.get("state") != "ACTIVE":
+        return ""
+    info = update.get("tool_info", {}) or {}
+    tool_name = update.get("tool_name") or info.get("name") or "tool"
+    return f"⚡ **Analyzing:** `{tool_name}`"
+
+
 async def _read_plan_stream(
     proc: asyncio.subprocess.Process,
     *,
     on_chunk: Callable | None,
+    on_activity: Callable | None = None,
     timeout: float,
     label: str,
 ) -> tuple[str, bytes]:
@@ -559,9 +583,14 @@ async def _read_plan_stream(
     async def read_stdout() -> None:
         nonlocal final_response
         async for raw_line in proc.stdout:
-            delta, fallback = _plan_stream_payload(
-                raw_line.decode("utf-8", errors="replace").strip()
-            )
+            line = raw_line.decode("utf-8", errors="replace").strip()
+            activity = _plan_stream_activity(line)
+            if activity and on_activity:
+                try:
+                    await on_activity(activity)
+                except Exception as exc:
+                    logger.warning("Could not publish %s activity: %s", label, exc)
+            delta, fallback = _plan_stream_payload(line)
             if fallback:
                 final_response = fallback
             if not delta:
@@ -593,6 +622,7 @@ async def generate_final_plan(
     qna: list[dict],
     config_dir: Optional[str] = None,
     on_chunk: Callable | None = None,
+    on_activity: Callable | None = None,
 ) -> Optional[str]:
     """
     Generates a full implementation plan taking into account Shisou's answers to the questions.
@@ -666,6 +696,7 @@ async def generate_final_plan(
         plan, stderr = await _read_plan_stream(
             proc,
             on_chunk=on_chunk,
+            on_activity=on_activity,
             timeout=config.PLAN_TIMEOUT_SECONDS,
             label=f"plan generation {task.task_id[:8]}",
         )
@@ -688,6 +719,7 @@ async def generate_revised_plan(
     qna: list[dict],
     config_dir: Optional[str] = None,
     on_chunk: Callable | None = None,
+    on_activity: Callable | None = None,
 ) -> Optional[str]:
     """
     Revises an existing implementation plan based on Shisou's feedback / modifications.
@@ -763,6 +795,7 @@ async def generate_revised_plan(
         plan, stderr = await _read_plan_stream(
             proc,
             on_chunk=on_chunk,
+            on_activity=on_activity,
             timeout=config.PLAN_TIMEOUT_SECONDS,
             label=f"plan revision {task.task_id[:8]}",
         )
