@@ -369,6 +369,7 @@ def _build_exec_cmd(
             config.AGY_BIN,
             "-p", prompt,
             "--output-format", "stream-json",
+            "--print-timeout", f"{config.AGY_PRINT_TIMEOUT_SECONDS}s",
             "--dangerously-skip-permissions",
             "--add-dir", task.project_dir,
             "--add-dir", "/home/ubuntu/workspace",

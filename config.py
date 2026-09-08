@@ -102,6 +102,10 @@ PLAN_TIMEOUT_SECONDS = int(_optional("PLAN_TIMEOUT_SECONDS", "1800"))  # 30 min
 # running. EXEC_MAX_TIMEOUT_SECONDS is an absolute safety ceiling.
 EXEC_IDLE_TIMEOUT_SECONDS = int(_optional("EXEC_IDLE_TIMEOUT_SECONDS", "600"))   # 10 min no output
 EXEC_MAX_TIMEOUT_SECONDS = int(_optional("EXEC_MAX_TIMEOUT_SECONDS", "5400"))    # 90 min absolute cap
+
+# Agy CLI otherwise stops every print-mode task after its own 5-minute default.
+# Keep its ceiling aligned with the bot watchdog; the idle watchdog remains 10 minutes.
+AGY_PRINT_TIMEOUT_SECONDS = int(_optional("AGY_PRINT_TIMEOUT_SECONDS", "5400"))
 LOG_LEVEL = _optional("LOG_LEVEL", "INFO")
 
 ALLOWED_APPROVER_ROLE_IDS = {r for r in (DEVOPS_ROLE_ID, ADMIN_ROLE_ID) if r != 0}
