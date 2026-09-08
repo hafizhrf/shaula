@@ -205,8 +205,9 @@ controls idle unload (default `10m`).
   is rebuilt from the run-history DB (`_try_revive_session`) and resumed from the
   transcript.
 - **Lifecycle UI:** `views/session_view.py` — `StopSessionView` (mirrors `stop session`)
-  and `HapusThreadView` (mirrors `hapus thread`). Buttons are retired at the start of every
-  new turn via `_clear_active_button`.
+  and `HapusThreadView` (mirrors `hapus thread`). Registered as persistent views (`setup_hook`
+  via `add_view`), surviving bot restarts. Buttons and interactive question options are
+  retired at the start of every new turn or manual reply via `_clear_active_button`.
 
 ## Task Execution Pipeline
 

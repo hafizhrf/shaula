@@ -32,38 +32,83 @@ def _persona() -> str:
     return "Shaula" if config.SHAULA_ENABLED else "Emilia"
 
 
-async def _clear_active_button(sess) -> None:
+async def _clear_active_button(sess=None, channel=None) -> None:
     """Retire the previous 'Session active' notice's Stop button and disable question buttons.
 
     Called at the start of every new turn so the button vanishes and unanswered question
     buttons are disabled the moment the conversation continues (whether the user types
-    their answer manually or clicks a button).
+    their answer manually or clicks a button). Also scans channel history to ensure buttons
+    from previous turns or before a bot restart are cleared.
     """
-    msg = getattr(sess, "active_msg", None)
-    if msg is not None:
-        sess.active_msg = None
-        try:
-            await msg.edit(view=None)
-        except discord.HTTPException:
-            pass
-
-    q_msg = getattr(sess, "active_question_msg", None)
-    q_view = getattr(sess, "active_question_view", None)
-    sess.active_question_msg = None
-    sess.active_question_view = None
-    if q_view is not None and not q_view.is_finished():
-        q_view.stop()
-        for item in q_view.children:
-            if isinstance(item, discord.ui.Button):
-                item.disabled = True
-        if q_msg is not None:
+    if sess is not None:
+        msg = getattr(sess, "active_msg", None)
+        if msg is not None:
+            sess.active_msg = None
             try:
-                await q_msg.edit(
-                    content=f"{q_msg.content}\n\n*(answered manually by Shisou)*",
-                    view=q_view,
-                )
-            except discord.HTTPException:
+                await msg.edit(view=None)
+            except (discord.HTTPException, discord.Forbidden):
                 pass
+
+        q_msg = getattr(sess, "active_question_msg", None)
+        q_view = getattr(sess, "active_question_view", None)
+        sess.active_question_msg = None
+        sess.active_question_view = None
+        if q_view is not None and not q_view.is_finished():
+            q_view.stop()
+            for item in q_view.children:
+                if isinstance(item, discord.ui.Button):
+                    item.disabled = True
+            if q_msg is not None:
+                try:
+                    await q_msg.edit(
+                        content=f"{q_msg.content}\n\n*(answered manually by Shisou)*",
+                        view=q_view,
+                    )
+                except (discord.HTTPException, discord.Forbidden):
+                    pass
+
+    # History scan: if channel is provided, also clean up any orphaned or pre-restart buttons
+    # in the most recent messages.
+    if channel is not None and hasattr(channel, "history"):
+        try:
+            async for old_msg in channel.history(limit=8):
+                if not old_msg.author.bot:
+                    continue
+                if not old_msg.components:
+                    continue
+
+                has_stop = False
+                has_active_question = False
+                for row in old_msg.components:
+                    for comp in getattr(row, "children", []):
+                        cid = getattr(comp, "custom_id", "") or ""
+                        lbl = getattr(comp, "label", "") or ""
+                        if "session:stop" in cid or "Stop session" in lbl:
+                            has_stop = True
+                        elif "opt_" in cid or "choice" in cid.lower():
+                            if not getattr(comp, "disabled", False):
+                                has_active_question = True
+
+                if has_stop:
+                    try:
+                        await old_msg.edit(view=None)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+
+                if has_active_question:
+                    try:
+                        view = discord.ui.View.from_message(old_msg)
+                        for child in view.children:
+                            child.disabled = True
+                        content = old_msg.content or ""
+                        if "*(answered" not in content and "*(⏰" not in content and "👉 **Selected" not in content:
+                            content = f"{content}\n\n*(answered manually by Shisou)*"
+                        await old_msg.edit(content=content, view=view)
+                    except (discord.HTTPException, discord.Forbidden):
+                        pass
+        except Exception as e:
+            logger.debug("Failed history scan in _clear_active_button: %s", e)
+
 
 
 async def archive_thread(channel) -> None:
@@ -169,7 +214,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         session_id = sess.session_id
         resume = sess.started
         account_config_dir = sess.config_dir  # existing session's account wins (resume safety)
-        await _clear_active_button(sess)      # new turn → retire the previous Stop button
+        await _clear_active_button(sess, channel)      # new turn → retire previous Stop and question buttons
 
         # Auto-compaction: a long-lived thread keeps resuming a bigger context every turn.
         # When the last turn's context crossed the threshold, ring a heads-up and run

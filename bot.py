@@ -615,6 +615,10 @@ class DevOpsBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents)
 
     async def setup_hook(self):
+        from views.session_view import StopSessionView, HapusThreadView
+        self.add_view(StopSessionView())
+        self.add_view(HapusThreadView())
+
         from services import run_store
         run_store.init_db()  # durable run-history DB (data/runs.db); fail-safe
         for cog in COGS:
@@ -659,7 +663,7 @@ class DevOpsBot(commands.Bot):
                     try:
                         from commands.task import _clear_active_button
                         from views.session_view import HapusThreadView
-                        await _clear_active_button(sess)
+                        await _clear_active_button(sess, channel)
                         await channel.send(
                             f"💤 Session Claude ditutup otomatis (idle "
                             f"{claude_session.IDLE_TIMEOUT // 60} menit), Apis~",
@@ -764,7 +768,7 @@ class DevOpsBot(commands.Bot):
                     sess = claude_session.stop(channel_id)
                     turns = sess.turns if sess else 0
                     if sess:
-                        await _clear_active_button(sess)
+                        await _clear_active_button(sess, message.channel)
                     is_thread = isinstance(message.channel, discord.Thread)
                     note = " Task yang lagi jalan Emilia hentikan juga ya~" if killed else ""
                     await message.channel.send(
@@ -866,6 +870,10 @@ class ShaulaBot(commands.Bot):
         super().__init__(command_prefix="!shaula ", intents=intents)
 
     async def setup_hook(self):
+        from views.session_view import StopSessionView, HapusThreadView
+        self.add_view(StopSessionView())
+        self.add_view(HapusThreadView())
+
         # Localhost intake so the external Emilia (hermes gateway, separate process)
         # can hand a task to Shaula here → existing run_task_flow (thread + streaming).
         await self._start_delegation_intake()
@@ -1009,18 +1017,20 @@ class ShaulaBot(commands.Bot):
 
     async def _session_idle_sweeper(self):
         from services import claude_session
-        while True:
+        while not self.is_closed():
             await asyncio.sleep(60)
-            now = asyncio.get_event_loop().time()
-            stale = claude_session.list_idle_channels(now)
-            for cid in stale:
-                sess = claude_session.stop(cid)
-                if sess:
+            for sess in claude_session.sweep_idle():
+                channel = self.get_channel(sess.channel_id)
+                if not channel:
                     try:
-                        channel = self.get_channel(cid) or await self.fetch_channel(cid)
+                        channel = await self.fetch_channel(sess.channel_id)
+                    except Exception:
+                        channel = None
+                if channel:
+                    try:
                         from commands.task import _clear_active_button, archive_thread
                         from views.session_view import HapusThreadView
-                        await _clear_active_button(sess)
+                        await _clear_active_button(sess, channel)
                         await channel.send(
                             f"💤 Session closed automatically (idle "
                             f"{claude_session.IDLE_TIMEOUT // 60} mins), Shisou~",
@@ -1071,7 +1081,7 @@ class ShaulaBot(commands.Bot):
                 sess = claude_session.stop(channel_id)
                 turns = sess.turns if sess else 0
                 if sess:
-                    await _clear_active_button(sess)
+                    await _clear_active_button(sess, message.channel)
                 is_thread = isinstance(message.channel, discord.Thread)
                 note = " Running task was also stopped~" if killed else ""
                 await message.channel.send(
@@ -1083,7 +1093,7 @@ class ShaulaBot(commands.Bot):
             sess = claude_session.get(channel_id)
             if sess and not sess.busy:
                 from commands.task import _clear_active_button
-                await _clear_active_button(sess)
+                await _clear_active_button(sess, message.channel)
             async with message.channel.typing():
                 await _continue_session(message)
             return
@@ -1093,13 +1103,19 @@ class ShaulaBot(commands.Bot):
         # so the thread stays continuable instead of going silent.
         if isinstance(message.channel, discord.Thread) and _SESSION_ID_RE.match(message.channel.name or ""):
             if _is_session_stop(message.content):
+                from commands.task import _clear_active_button
+                from views.session_view import HapusThreadView
+                await _clear_active_button(None, message.channel)
                 await message.channel.send(
                     "ℹ️ This session was already closed, Shisou~ (likely after a bot restart). "
-                    "Type `delete thread` if you want to clean it up~"
+                    "Type `delete thread` if you want to clean it up~",
+                    view=HapusThreadView("Shaula"),
                 )
                 return
             revived = await _try_revive_session(message.channel)
             if revived is not None:
+                from commands.task import _clear_active_button
+                await _clear_active_button(revived, message.channel)
                 await message.channel.send(
                     f"♻️ Resuming session `{revived.session_id[:8]}` from transcript, Shisou~! (✧ω✧)"
                 )

@@ -28,7 +28,7 @@ class StopTaskCommands(commands.Cog):
             if closed_sess:
                 from commands.task import _clear_active_button
                 from views.session_view import HapusThreadView
-                await _clear_active_button(closed_sess)
+                await _clear_active_button(closed_sess, interaction.channel)
                 is_thread = isinstance(interaction.channel, discord.Thread)
                 await interaction.response.send_message(
                     f"🛑 Shaula session closed, Shisou~ ({closed_sess.turns} turn(s)).",
