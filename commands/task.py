@@ -733,7 +733,8 @@ async def run_plan_flow(
             msg_content = (
                 f"**Question {idx + 1} of {len(questions)}:**\n"
                 f"> **{q_text}**\n\n"
-                f"{options_display}"
+                f"{options_display}\n\n"
+                f"*Click an option, click ✏️ Custom answer, or type your custom choice directly in this thread, Shisou~*"
             )
 
             fut = asyncio.get_running_loop().create_future()
@@ -741,6 +742,7 @@ async def run_plan_flow(
                 creator_id=creator_id,
                 options=opts,
                 future=fut,
+                channel_id=thread.id,
                 persona=persona,
                 timeout=300.0,
             )

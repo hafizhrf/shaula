@@ -15,32 +15,73 @@ logger = logging.getLogger(__name__)
 
 NUM_EMOJIS = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
 
+# Active question registry for /plan mode: channel_id -> PlanQuestionView
+_active_plan_questions: dict[int, "PlanQuestionView"] = {}
+
+
+def get_active_plan_question(channel_id: int) -> Optional["PlanQuestionView"]:
+    return _active_plan_questions.get(channel_id)
+
+
+def register_plan_question(channel_id: int, view: "PlanQuestionView") -> None:
+    if channel_id:
+        _active_plan_questions[channel_id] = view
+
+
+def unregister_plan_question(channel_id: int) -> None:
+    if channel_id:
+        _active_plan_questions.pop(channel_id, None)
+
+
+class CustomAnswerModal(discord.ui.Modal, title="Custom Answer"):
+    answer = discord.ui.TextInput(
+        label="Your custom choice / instruction",
+        style=discord.TextStyle.paragraph,
+        placeholder="Type what you want here (e.g. ai assist + ocr too if can)...",
+        required=True,
+        max_length=1000,
+    )
+
+    def __init__(self, parent_view: "PlanQuestionView"):
+        super().__init__()
+        self.parent_view = parent_view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        custom_text = self.answer.value.strip()
+        if not custom_text:
+            await interaction.response.send_message("Answer cannot be empty, Shisou~", ephemeral=True)
+            return
+
+        await interaction.response.defer()
+        await self.parent_view.handle_custom_input(custom_text, interaction.user)
+
 
 class PlanQuestionView(discord.ui.View):
-    """Presents a question's options as buttons. Resolves a Future when an option is selected."""
+    """Presents a question's options as buttons. Resolves a Future when an option is selected or text is typed."""
 
     def __init__(
         self,
         creator_id: int,
         options: list[str],
         future: asyncio.Future,
+        channel_id: int = 0,
         persona: str = "Shaula",
         timeout: float = 300.0,
     ):
         super().__init__(timeout=timeout)
+        self.channel_id = channel_id
         self.creator_id = creator_id
         self.options = options
         self.future = future
         self.persona = persona
         self.message: Optional[discord.Message] = None
 
-        # Build option buttons dynamically
-        for idx, opt in enumerate(options[:4]):  # Max 4 choices + 1 skip button = 5 buttons (1 row)
+        # Build option buttons dynamically (first 3 in row 0, 4th in row 1 if present)
+        for idx, opt in enumerate(options[:4]):
             emoji = NUM_EMOJIS[idx] if idx < len(NUM_EMOJIS) else "🔹"
-            # Keep button label compact (Discord max label length is 80 chars)
             clean_label = opt.strip().replace("\n", " ")
-            if len(clean_label) > 65:
-                clean_label = clean_label[:62] + "..."
+            if len(clean_label) > 60:
+                clean_label = clean_label[:57] + "..."
             button_label = f"{idx + 1}. {clean_label}"
 
             btn = discord.ui.Button(
@@ -48,9 +89,21 @@ class PlanQuestionView(discord.ui.View):
                 style=discord.ButtonStyle.primary,
                 emoji=emoji,
                 custom_id=f"plan_opt_{idx}",
+                row=0 if idx < 3 else 1,
             )
             btn.callback = self._make_callback(opt, idx)
             self.add_item(btn)
+
+        # Custom answer button (opens Modal)
+        custom_btn = discord.ui.Button(
+            label="Custom answer",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+            custom_id="plan_opt_custom",
+            row=1,
+        )
+        custom_btn.callback = self._make_custom_callback()
+        self.add_item(custom_btn)
 
         # Skip / Default button
         skip_btn = discord.ui.Button(
@@ -58,15 +111,37 @@ class PlanQuestionView(discord.ui.View):
             style=discord.ButtonStyle.secondary,
             emoji="⏩",
             custom_id="plan_opt_skip",
+            row=1,
         )
         skip_btn.callback = self._make_callback("As Shaula wishes (pick best option)", -1)
         self.add_item(skip_btn)
 
-    def _can_interact(self, interaction: discord.Interaction) -> bool:
-        if interaction.user.id == self.creator_id:
+        if channel_id:
+            register_plan_question(channel_id, self)
+
+    def _can_interact_user(self, user: discord.User | discord.Member) -> bool:
+        if user.id == self.creator_id:
             return True
-        user_role_ids = {r.id for r in interaction.user.roles}
-        return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
+        if hasattr(user, "roles"):
+            user_role_ids = {r.id for r in user.roles}
+            return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
+        return False
+
+    def _can_interact(self, interaction: discord.Interaction) -> bool:
+        return self._can_interact_user(interaction.user)
+
+    def _make_custom_callback(self):
+        async def callback(interaction: discord.Interaction):
+            if not self._can_interact(interaction):
+                await interaction.response.send_message(
+                    f"Only Shisou <@{self.creator_id}> can choose this option, Shisou~",
+                    ephemeral=True,
+                )
+                return
+            modal = CustomAnswerModal(self)
+            await interaction.response.send_modal(modal)
+
+        return callback
 
     def _make_callback(self, choice_text: str, choice_idx: int):
         async def callback(interaction: discord.Interaction):
@@ -78,6 +153,8 @@ class PlanQuestionView(discord.ui.View):
                 return
 
             self.stop()
+            unregister_plan_question(self.channel_id)
+
             for item in self.children:
                 if isinstance(item, discord.ui.Button):
                     item.disabled = True
@@ -97,7 +174,36 @@ class PlanQuestionView(discord.ui.View):
 
         return callback
 
+    async def handle_custom_input(self, text: str, user: discord.User | discord.Member) -> bool:
+        if not self._can_interact_user(user):
+            return False
+
+        self.stop()
+        unregister_plan_question(self.channel_id)
+
+        for item in self.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+                if item.custom_id == "plan_opt_custom":
+                    item.style = discord.ButtonStyle.success
+
+        clean_text = text.strip()
+        display_text = clean_text if len(clean_text) <= 200 else clean_text[:197] + "..."
+        if self.message:
+            try:
+                await self.message.edit(
+                    content=f"{self.message.content}\n\n👉 **Custom answer by Shisou:** **{display_text}**",
+                    view=self,
+                )
+            except discord.HTTPException:
+                pass
+
+        if not self.future.done():
+            self.future.set_result(clean_text)
+        return True
+
     async def on_timeout(self):
+        unregister_plan_question(self.channel_id)
         for item in self.children:
             if isinstance(item, discord.ui.Button):
                 item.disabled = True

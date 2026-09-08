@@ -707,6 +707,18 @@ class DevOpsBot(commands.Bot):
                     return
             return
 
+        # Priority 1.5: interactive /plan question waiting for user choice or custom input
+        from views.plan_view import get_active_plan_question
+        active_plan_q = get_active_plan_question(channel_id)
+        if active_plan_q is not None and not active_plan_q.future.done():
+            accepted = await active_plan_q.handle_custom_input(message.content, message.author)
+            if accepted:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                return
+
         # Priority 2: pending dangerous task waiting for confirmation
         first_word = message.content.lower().strip().split()[0] if message.content.strip() else ''
         if channel_id in _pending_tasks:
@@ -1071,6 +1083,41 @@ class ShaulaBot(commands.Bot):
             return  # Emilia's lane (main channel only)
 
         channel_id = message.channel.id
+
+        # Priority 0.5: stdin relay — subprocess waiting for input
+        from services import stdin_relay
+        if stdin_relay.is_waiting(channel_id):
+            if message.content.strip().lower() in ("batal", "cancel"):
+                stdin_relay.cancel(channel_id)
+                await message.channel.send("Input dibatalkan, Shisou~")
+                return
+            provided = stdin_relay.provide_input(channel_id, message.content)
+            if provided:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                return
+
+        # Priority 0.8: active /plan interactive question waiting for user choice or custom input
+        from views.plan_view import get_active_plan_question
+        active_plan_q = get_active_plan_question(channel_id)
+        if active_plan_q is not None and not active_plan_q.future.done():
+            if _is_session_stop(message.content):
+                from views.plan_view import unregister_plan_question
+                unregister_plan_question(channel_id)
+                active_plan_q.stop()
+                active_plan_q.future.cancel()
+                await message.channel.send("🛑 Planning stopped by Shisou~")
+                return
+            accepted = await active_plan_q.handle_custom_input(message.content, message.author)
+            if accepted:
+                try:
+                    await message.add_reaction("✅")
+                except Exception:
+                    pass
+                return
+
         from services import claude_session
         from commands.task import archive_thread
 
