@@ -236,8 +236,17 @@ def extract_question_and_options(output_text: str, session_id: Optional[str] = N
     """
     if session_id:
         from_trans = extract_question_from_transcript(session_id)
-        if from_trans and len(from_trans.get("options", [])) >= 2:
-            return from_trans
+        if from_trans:
+            transcript_options = from_trans.get("options", [])
+            if (
+                isinstance(transcript_options, list)
+                and 2 <= len(transcript_options) <= 5
+                and all(isinstance(option, str) and option.strip() for option in transcript_options)
+            ):
+                return {
+                    "question": from_trans.get("question", "Please select an option below, Shisou~"),
+                    "options": [option.strip() for option in transcript_options],
+                }
 
     if not output_text:
         return None
@@ -253,10 +262,20 @@ def extract_question_and_options(output_text: str, session_id: Optional[str] = N
             if 2 <= len(clean_opt) <= 120:
                 options.append(clean_opt)
 
-    if len(options) >= 2:
+    # A numbered list alone is not a question. Only add buttons when the agent
+    # explicitly asks Shisou to decide; ordinary plans/lists stay ordinary text.
+    option_positions = [
+        index for index, line in enumerate(lines) if pattern.match(line)
+    ]
+    question_candidates = (
+        lines[max(0, option_positions[0] - 2):option_positions[0]]
+        + lines[option_positions[-1] + 1:option_positions[-1] + 3]
+    ) if option_positions else []
+    question = next((line for line in reversed(question_candidates) if line.endswith("?")), "")
+    if 2 <= len(options) <= 5 and question:
         return {
-            "question": "Please select one of the options below, Shisou~",
-            "options": options[:5],
+            "question": question,
+            "options": options,
         }
     return None
 
@@ -388,22 +407,25 @@ async def generate_plan_questions(
     task: TaskRecord, config_dir: Optional[str] = None
 ) -> list[dict]:
     """
-    Analyzes task requirements and codebase, generating 1 to 4 clarifying multiple-choice questions.
+    Analyzes task requirements and codebase for only the decisions that require user input.
     Returns a list of dicts: [{"id": 1, "question": "...", "options": ["opt1", "opt2", ...]}]
     """
     prompt = (
         f"[System Instruction: {SHAULA_PERSONA}]\n\n"
         f"You are Shaula in interactive planning mode for Shisou.\n"
         f"Task to plan: {task.description}\n\n"
-        "Analyze the task requirements and codebase. If there are key design decisions, "
-        "architectural trade-offs, technology choices, or ambiguities that Shisou needs to decide on, "
-        "formulate 1 to 3 multiple-choice clarifying questions.\n"
+        "Analyze the task requirements and codebase. Ask a question ONLY when a decision from Shisou is "
+        "materially necessary to make a responsible plan. Do not turn the planning flow into a mandatory "
+        "questionnaire, invent ambiguity, or ask merely to offer interaction.\n"
         "Rules:\n"
+        "- Decide yourself whether any question is needed and how many; return an empty questions list when none is needed.\n"
+        "- Each question must be a real decision with concrete, mutually exclusive options that you would genuinely act on.\n"
+        "- Use exactly as many options as the decision needs. Two options are valid; never pad a question to reach three or four options.\n"
+        "- Do not include a default, 'other', 'let Shaula decide', or invented fallback option; the Discord UI already accepts a custom answer.\n"
         "- Write the questions in Shaula's character (affectionate, calling user Shisou, enthusiastic).\n"
         "- Default language is English. If the task description is in Indonesian, write questions and options in Indonesian.\n"
-        "- Provide 2 to 4 clear, distinct options per question.\n"
+        "- Provide 2 to 5 clear, distinct options per question (Discord's platform limit is five buttons).\n"
         "- Each option should be concise (fit nicely on a button or short text).\n"
-        "- If the task is already completely explicit, trivial, or has no sensible choices, return an empty questions list.\n"
         "- Output ONLY valid JSON in this exact structure without markdown backticks:\n"
         '{"questions": [{"id": 1, "question": "Question text...", "options": ["Option 1", "Option 2"]}]}'
     )
@@ -452,9 +474,31 @@ async def generate_plan_questions(
         match = re.search(r'\{.*"questions"\s*:\s*\[.*\]\s*\}', raw, re.DOTALL)
         if match:
             data = json.loads(match.group(0))
-            return data.get("questions", [])
-        data = json.loads(raw)
-        return data.get("questions", [])
+        else:
+            data = json.loads(raw)
+
+        questions = data.get("questions", [])
+        if not isinstance(questions, list):
+            return []
+
+        # Do not silently trim or fabricate choices. A malformed question is skipped;
+        # valid questions retain precisely the choices supplied by the agent.
+        valid_questions = []
+        for item in questions:
+            if not isinstance(item, dict):
+                continue
+            question = item.get("question")
+            options = item.get("options")
+            if not isinstance(question, str) or not isinstance(options, list):
+                continue
+            cleaned_options = [option.strip() for option in options if isinstance(option, str) and option.strip()]
+            if 2 <= len(cleaned_options) <= 5:
+                valid_questions.append({
+                    "id": item.get("id"),
+                    "question": question.strip(),
+                    "options": cleaned_options,
+                })
+        return valid_questions
     except Exception as e:
         logger.warning("Could not generate plan questions: %s", e)
         return []

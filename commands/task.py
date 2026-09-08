@@ -721,7 +721,7 @@ async def run_plan_flow(
 
             num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
             formatted_opts = []
-            for o_idx, opt in enumerate(opts[:4]):
+            for o_idx, opt in enumerate(opts):
                 emo = num_emojis[o_idx] if o_idx < len(num_emojis) else "🔹"
                 formatted_opts.append(f"{emo} {opt}")
 
@@ -730,7 +730,7 @@ async def run_plan_flow(
                 f"**Question {idx + 1} of {len(questions)}:**\n"
                 f"> **{q_text}**\n\n"
                 f"{options_display}\n\n"
-                f"*Click an option, click ✏️ Custom answer, or type your custom choice directly in this thread, Shisou~*"
+                f"*These are Shaula's actual options. Click one, click ✏️ Custom answer, or type your own answer directly in this thread, Shisou~*"
             )
 
             fut = asyncio.get_running_loop().create_future()
@@ -748,7 +748,14 @@ async def run_plan_flow(
             try:
                 selected_answer = await fut
             except Exception:
-                selected_answer = opts[0] if opts else "As Shaula wishes"
+                selected_answer = None
+
+            if selected_answer is None:
+                await thread.send(
+                    "⏸️ **Planning paused:** Shaula needs this decision from Shisou before continuing. "
+                    "Please start `/plan` again when you're ready, Shisou~"
+                )
+                return
 
             qna.append({"question": q_text, "answer": selected_answer})
     else:

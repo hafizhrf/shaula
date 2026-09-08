@@ -93,8 +93,8 @@ class PlanQuestionView(discord.ui.View):
         self.persona = persona
         self.message: Optional[discord.Message] = None
 
-        # Build option buttons dynamically (first 3 in row 0, 4th in row 1 if present)
-        for idx, opt in enumerate(options[:4]):
+        # Keep every agent-provided option (up to Discord's five-button limit).
+        for idx, opt in enumerate(options):
             emoji = NUM_EMOJIS[idx] if idx < len(NUM_EMOJIS) else "🔹"
             clean_label = opt.strip().replace("\n", " ")
             if len(clean_label) > 60:
@@ -106,7 +106,7 @@ class PlanQuestionView(discord.ui.View):
                 style=discord.ButtonStyle.primary,
                 emoji=emoji,
                 custom_id=f"plan_opt_{idx}",
-                row=0 if idx < 3 else 1,
+                row=0 if idx < 5 else 1,
             )
             btn.callback = self._make_callback(opt, idx)
             self.add_item(btn)
@@ -121,17 +121,6 @@ class PlanQuestionView(discord.ui.View):
         )
         custom_btn.callback = self._make_custom_callback()
         self.add_item(custom_btn)
-
-        # Skip / Default button
-        skip_btn = discord.ui.Button(
-            label="As Shaula wishes",
-            style=discord.ButtonStyle.secondary,
-            emoji="⏩",
-            custom_id="plan_opt_skip",
-            row=1,
-        )
-        skip_btn.callback = self._make_callback("As Shaula wishes (pick best option)", -1)
-        self.add_item(skip_btn)
 
         if channel_id:
             register_plan_question(channel_id, self)
@@ -175,12 +164,10 @@ class PlanQuestionView(discord.ui.View):
             for item in self.children:
                 if isinstance(item, discord.ui.Button):
                     item.disabled = True
-                    if (choice_idx >= 0 and item.custom_id == f"plan_opt_{choice_idx}") or (
-                        choice_idx < 0 and item.custom_id == "plan_opt_skip"
-                    ):
+                    if choice_idx >= 0 and item.custom_id == f"plan_opt_{choice_idx}":
                         item.style = discord.ButtonStyle.success
 
-            selected_desc = f"**{choice_text}**" if choice_idx >= 0 else "*As Shaula wishes*"
+            selected_desc = f"**{choice_text}**"
             await interaction.response.edit_message(
                 content=f"{interaction.message.content}\n\n👉 **Selected by Shisou:** {selected_desc}",
                 view=None,
@@ -218,15 +205,14 @@ class PlanQuestionView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(
-                    content=f"{self.message.content}\n\n*(⏰ Time's up — Shaula will pick the recommended option, Shisou~)*",
+                    content=f"{self.message.content}\n\n*(⏰ Time's up — planning is paused until Shisou provides this decision.)*",
                     view=None,
                 )
             except discord.HTTPException:
                 pass
         if not self.future.done():
-            # Default to first option or fallback text
-            default_choice = self.options[0] if self.options else "As Shaula wishes"
-            self.future.set_result(default_choice)
+            # A decision must come from the user; never select an option on their behalf.
+            self.future.set_result(None)
 
 
 class PlanExecuteView(discord.ui.View):
@@ -378,7 +364,7 @@ class SessionQuestionChoiceView(discord.ui.View):
         self.message: Optional[discord.Message] = None
 
         num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
-        for idx, opt in enumerate(options[:4]):
+        for idx, opt in enumerate(options):
             emoji = num_emojis[idx] if idx < len(num_emojis) else "🔹"
             clean_label = opt.strip().replace("\n", " ")
             if len(clean_label) > 65:
@@ -514,4 +500,3 @@ class InputPromptButtonsView(discord.ui.View):
                 await self.message.edit(view=self)
             except discord.HTTPException:
                 pass
-
