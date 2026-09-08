@@ -99,13 +99,13 @@ async def _post_initial_prompt(channel, description: str) -> None:
     desc = (description or "").strip()
     if not desc:
         return
-    header = "📝 **Prompt awal:**"
+    header = "📝 **Initial prompt:**"
     try:
         if len(desc) <= 1800:
             await channel.send(f"{header}\n>>> {desc}")
         else:
             await channel.send(
-                f"{header} *(panjang — Shaula lampirin sebagai file ya~)*",
+                f"{header} *(too long — Shaula attached it as a file, Shisou~)*",
                 file=discord.File(io.BytesIO(desc.encode("utf-8")), filename="prompt.txt"),
             )
     except discord.HTTPException:
