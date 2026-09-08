@@ -1080,6 +1080,10 @@ class ShaulaBot(commands.Bot):
                 )
                 await archive_thread(message.channel)
                 return
+            sess = claude_session.get(channel_id)
+            if sess and not sess.busy:
+                from commands.task import _clear_active_button
+                await _clear_active_button(sess)
             async with message.channel.typing():
                 await _continue_session(message)
             return

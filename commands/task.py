@@ -33,19 +33,37 @@ def _persona() -> str:
 
 
 async def _clear_active_button(sess) -> None:
-    """Retire the previous 'Session aktif' notice's Stop button.
+    """Retire the previous 'Session active' notice's Stop button and disable question buttons.
 
-    Called at the start of every new turn so the button vanishes the moment the
-    conversation continues (whether the user chats or the bot replies).
+    Called at the start of every new turn so the button vanishes and unanswered question
+    buttons are disabled the moment the conversation continues (whether the user types
+    their answer manually or clicks a button).
     """
     msg = getattr(sess, "active_msg", None)
-    if msg is None:
-        return
-    sess.active_msg = None
-    try:
-        await msg.edit(view=None)
-    except discord.HTTPException:
-        pass
+    if msg is not None:
+        sess.active_msg = None
+        try:
+            await msg.edit(view=None)
+        except discord.HTTPException:
+            pass
+
+    q_msg = getattr(sess, "active_question_msg", None)
+    q_view = getattr(sess, "active_question_view", None)
+    sess.active_question_msg = None
+    sess.active_question_view = None
+    if q_view is not None and not q_view.is_finished():
+        q_view.stop()
+        for item in q_view.children:
+            if isinstance(item, discord.ui.Button):
+                item.disabled = True
+        if q_msg is not None:
+            try:
+                await q_msg.edit(
+                    content=f"{q_msg.content}\n\n*(answered manually by Shisou)*",
+                    view=q_view,
+                )
+            except discord.HTTPException:
+                pass
 
 
 async def archive_thread(channel) -> None:
@@ -229,13 +247,40 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
             view.message = msg
         try:
             user_input = await stdin_relay.wait_for_input(channel.id, timeout=300.0)
+            if view and not view.is_finished():
+                view.stop()
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button):
+                        item.disabled = True
+                try:
+                    await msg.edit(view=view)
+                except discord.HTTPException:
+                    pass
             if proc.stdin and not proc.stdin.is_closing():
                 proc.stdin.write((user_input + "\n").encode())
                 await proc.stdin.drain()
                 await channel.send(f"✅ Input sent, Shisou~")
         except asyncio.TimeoutError:
+            if view and not view.is_finished():
+                view.stop()
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button):
+                        item.disabled = True
+                try:
+                    await msg.edit(view=view)
+                except discord.HTTPException:
+                    pass
             await channel.send("⏰ Timed out, continuing process without input, Shisou~")
         except asyncio.CancelledError:
+            if view and not view.is_finished():
+                view.stop()
+                for item in view.children:
+                    if isinstance(item, discord.ui.Button):
+                        item.disabled = True
+                try:
+                    await msg.edit(view=view)
+                except discord.HTTPException:
+                    pass
             await channel.send("❌ Input cancelled, Shisou~")
             proc.kill()
 
@@ -340,6 +385,9 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
                 view=choice_view,
             )
             choice_view.message = choice_msg
+            if sess:
+                sess.active_question_msg = choice_msg
+                sess.active_question_view = choice_view
 
         view = StopSessionView(sess.channel_id, persona=persona)
         engine_label = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"

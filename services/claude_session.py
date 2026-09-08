@@ -35,7 +35,9 @@ class Session:
         self.turns = 0
         self.is_thread = False        # True if channel_id is a dedicated session thread
         self.origin_channel_id = None # parent channel the thread was spun off from
-        self.active_msg = None        # the latest "🟢 Session aktif" notice (carries the Stop button)
+        self.active_msg = None        # the latest "🟢 Session active" notice (carries the Stop button)
+        self.active_question_msg = None  # the latest question prompt message (carries option buttons)
+        self.active_question_view = None # the view for the active question
         self.last_context_tokens = 0  # input-token size of the last turn (drives auto-compaction)
         self.last_active = time.monotonic()
 
