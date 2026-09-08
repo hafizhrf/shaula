@@ -323,7 +323,8 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
                 except discord.HTTPException:
                     pass
             await channel.send("❌ Input cancelled, Shisou~")
-            proc.kill()
+            from services.process_cleanup import terminate_process_group
+            await terminate_process_group(proc, label="interactive task input")
 
     try:
         def on_session_id_resolved(sid: str):

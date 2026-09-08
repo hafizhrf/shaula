@@ -8,6 +8,8 @@ import json
 import logging
 import os
 
+from services.process_cleanup import communicate_with_timeout
+
 logger = logging.getLogger(__name__)
 
 _BASE = os.path.join(os.path.dirname(__file__), '..', 'skills')
@@ -92,6 +94,7 @@ async def run_skill(name: str, args: list[str] | None = None) -> tuple[str, int]
         'python3', path, *(args or []),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+    stdout, _ = await communicate_with_timeout(proc, timeout=30, label=f"skill {name}")
     return stdout.decode('utf-8', errors='replace').strip(), proc.returncode

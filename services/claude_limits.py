@@ -14,6 +14,7 @@ import time
 from datetime import datetime, timedelta, timezone
 
 import config
+from services.process_cleanup import communicate_with_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -103,8 +104,9 @@ async def probe(timeout: int = 60) -> bool:
             stderr=asyncio.subprocess.DEVNULL,
             cwd="/tmp",
             env=env,
+            start_new_session=True,
         )
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        out, _ = await communicate_with_timeout(proc, timeout=timeout, label="Claude limit probe")
     except Exception as e:
         logger.warning("claude_limits probe failed: %s", e)
         return False

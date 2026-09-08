@@ -12,6 +12,7 @@ import psutil
 
 import config
 from services import stdin_relay, task_store
+from services.process_cleanup import communicate_with_timeout, terminate_process_group
 from services.task_store import RiskLevel, TaskRecord, TaskState
 
 logger = logging.getLogger(__name__)
@@ -380,9 +381,12 @@ async def run_planning(task: TaskRecord) -> Optional[str]:
             stderr=asyncio.subprocess.PIPE,
             cwd=task.project_dir,
             env=env,
+            start_new_session=True,
         )
         task.process_pid = proc.pid
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=120)
+        stdout, stderr = await communicate_with_timeout(
+            proc, timeout=120, label=f"planning task {task.task_id[:8]}"
+        )
     except asyncio.TimeoutError:
         logger.error("Planning timed out for task %s", task.task_id[:8])
         task_store.update_state(task.task_id, TaskState.FAILED)
@@ -467,8 +471,11 @@ async def generate_plan_questions(
             stderr=asyncio.subprocess.PIPE,
             cwd=task.project_dir,
             env=env,
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        stdout, stderr = await communicate_with_timeout(
+            proc, timeout=90, label=f"plan-question analysis {task.task_id[:8]}"
+        )
         raw = stdout.decode("utf-8", errors="replace").strip()
         # Find JSON object
         match = re.search(r'\{.*"questions"\s*:\s*\[.*\]\s*\}', raw, re.DOTALL)
@@ -499,6 +506,9 @@ async def generate_plan_questions(
                     "options": cleaned_options,
                 })
         return valid_questions
+    except asyncio.TimeoutError:
+        logger.warning("Plan-question analysis timed out for task %s", task.task_id[:8])
+        return []
     except Exception as e:
         logger.warning("Could not generate plan questions: %s", e)
         return []
@@ -575,12 +585,18 @@ async def generate_final_plan(
             stderr=asyncio.subprocess.PIPE,
             cwd=task.project_dir,
             env=env,
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        stdout, stderr = await communicate_with_timeout(
+            proc, timeout=180, label=f"plan generation {task.task_id[:8]}"
+        )
         if proc.returncode != 0:
             logger.error("Planning failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
             return None
         return stdout.decode("utf-8", errors="replace").strip()
+    except asyncio.TimeoutError:
+        logger.error("Plan generation timed out for task %s", task.task_id[:8])
+        return None
     except Exception as e:
         logger.error("generate_final_plan error: %s", e)
         return None
@@ -661,12 +677,18 @@ async def generate_revised_plan(
             stderr=asyncio.subprocess.PIPE,
             cwd=task.project_dir,
             env=env,
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        stdout, stderr = await communicate_with_timeout(
+            proc, timeout=180, label=f"plan revision {task.task_id[:8]}"
+        )
         if proc.returncode != 0:
             logger.error("Plan revision failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
             return None
         return stdout.decode("utf-8", errors="replace").strip()
+    except asyncio.TimeoutError:
+        logger.error("Plan revision timed out for task %s", task.task_id[:8])
+        return None
     except Exception as e:
         logger.error("generate_revised_plan error: %s", e)
         return None
@@ -717,6 +739,7 @@ async def run_execution(
             cwd=task.project_dir,
             env=env,
             limit=4 * 1024 * 1024,  # 4 MB — prevents LimitOverrunError on large JSON lines
+            start_new_session=True,
         )
         task.process_pid = proc.pid
     except Exception as e:
@@ -900,7 +923,7 @@ async def run_execution(
                 f"{config.EXEC_MAX_TIMEOUT_SECONDS // 60} menit."
             )
         if timeout_msg:
-            proc.kill()
+            await terminate_process_group(proc, label=f"execution task {task.task_id[:8]}")
             break
 
     # Drain reader/flusher (kill makes the async-for end → done_event set → flusher exits).
@@ -989,8 +1012,11 @@ async def run_compaction(
             stderr=asyncio.subprocess.PIPE,
             cwd=project_dir,
             env=env,
+            start_new_session=True,
         )
-        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+        stdout, stderr = await communicate_with_timeout(
+            proc, timeout=timeout, label=f"compaction session {session_id[:8]}"
+        )
     except asyncio.TimeoutError:
         logger.warning("Compaction timed out for session %s", session_id[:8])
         return False
@@ -1031,6 +1057,7 @@ async def run_shell_interactive(
         stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
 
     all_output: list[str] = []
@@ -1094,15 +1121,15 @@ async def run_shell_interactive(
                 await channel.send("✅ Input dikirim~")
         except asyncio.TimeoutError:
             await channel.send("⏰ Timeout menunggu input. Process dihentikan.")
-            proc.kill()
+            await terminate_process_group(proc, label="interactive shell")
         except asyncio.CancelledError:
             await channel.send("❌ Input dibatalkan.")
-            proc.kill()
+            await terminate_process_group(proc, label="interactive shell")
 
     try:
         await asyncio.wait_for(reader(), timeout=timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        await terminate_process_group(proc, label="interactive shell")
 
     await proc.wait()
     stdin_relay.cancel(channel.id)

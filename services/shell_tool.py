@@ -11,6 +11,8 @@ operations — a targeted `rm -rf /tmp/foo` is allowed; `rm -rf /` is not.
 import asyncio
 import re
 
+from services.process_cleanup import communicate_with_timeout
+
 # --- Strict gate: applied to UNTRUSTED commands (Hermes emitted them) ----------
 # Block shell injection / chaining metacharacters and known dangerous verbs.
 _SHELL_INJECT = frozenset("|>&;$`!")
@@ -67,6 +69,7 @@ async def run(cmd: str, timeout: int = 10) -> tuple[str, int]:
         cmd,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        start_new_session=True,
     )
-    stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+    stdout, _ = await communicate_with_timeout(proc, timeout=timeout, label="shell command")
     return stdout.decode("utf-8", errors="replace").strip(), proc.returncode
