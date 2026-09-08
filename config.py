@@ -32,19 +32,29 @@ EMILIA_ENABLED = _optional("EMILIA_ENABLED", "true").strip().lower() not in {"fa
 # text channel Emilia can post in). Set to a channel ID to pin it.
 STATUS_CHANNEL_ID = int(_optional("STATUS_CHANNEL_ID", "0") or "0")
 
+# CLI Executor Engine: 'claude' or 'agy' (Antigravity CLI).
+# Controlled by CLI_ENGINE in .env; defaults to claude if unset.
+CLI_ENGINE = _optional("CLI_ENGINE", "claude").strip().lower()
+
 # Empty = use `claude login` OAuth (Pro subscription). Set to sk-ant-... for API key auth.
 ANTHROPIC_API_KEY = _optional("ANTHROPIC_API_KEY", "")
 CLAUDE_BIN = _optional("CLAUDE_BIN", "/usr/bin/claude")
 # Model for Claude Code tasks. Empty = use the account default (no --model flag).
 # Set to e.g. "sonnet" to cut token usage on routine DevOps tasks.
 CLAUDE_MODEL = _optional("CLAUDE_MODEL", "").strip()
-# Config dir for the "kantor" (work-profile) Claude account, used by /task-kantor.
+# Config dir for the "kantor" (work-profile) Claude account, used by /task-kantor or /run (kantor=True).
 # Mirrors the `claude-kantor` wrapper: CLAUDE_CONFIG_DIR=$HOME/.claude-kantor.
 # Empty = default account (the bot's normal ~/.claude). Used as a fallback when the
 # default account hits its 5-hour limit.
 CLAUDE_KANTOR_CONFIG_DIR = _optional(
     "CLAUDE_KANTOR_CONFIG_DIR", os.path.expanduser("~/.claude-kantor")
 )
+
+# Antigravity CLI (agy) configuration
+AGY_BIN = _optional("AGY_BIN", "/home/ubuntu/.local/bin/agy").strip()
+# Model for agy tasks. Empty = use agy CLI default (e.g., Gemini 3.8 Flash High).
+# Override with e.g. "gemini-3.8-flash-high", "gemini-3.1-pro-high", etc.
+AGY_MODEL = _optional("AGY_MODEL", "").strip()
 
 # Dify knowledge base (RAG) — local Dify instance gives Emilia semantic recall over
 # SOPs/runbooks/lessons. Blank dataset id/key = feature off (graceful no-op).

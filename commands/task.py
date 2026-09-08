@@ -18,6 +18,7 @@ from views.approval_view import (
     make_plan_embed,
     make_running_embed,
 )
+from views.plan_view import PlanExecuteView, PlanQuestionView
 from views.session_view import StopSessionView
 
 logger = logging.getLogger(__name__)
@@ -58,7 +59,7 @@ async def archive_thread(channel) -> None:
 
 def _thread_name(description: str) -> str:
     name = " ".join(description.replace("__deploy__", "").split())[:90].strip()
-    return f"🧵 {name}" if name else "🧵 Claude session"
+    return f"🧵 {name}" if name else "🧵 Shaula session"
 
 
 async def _prefix_thread_id(thread, session_id: str, description: str) -> None:
@@ -103,13 +104,13 @@ async def _ensure_session_thread(channel, task):
             type=discord.ChannelType.public_thread,
             auto_archive_duration=1440,  # 24h
         )
-        await channel.send(f"🧵 Shaula buatin thread buat session ini ya, Shisou~ → {thread.mention}")
+        await channel.send(f"🧵 Shaula created a thread for this session, Shisou~! (✧ω✧) → {thread.mention}")
         return thread
     except (discord.Forbidden, discord.HTTPException) as e:
         logger.warning("Could not create session thread (%s) — running in channel", e)
         await channel.send(
-            "⚠️ Shaula nggak bisa bikin thread (kurang izin `Create Public Threads`). "
-            "Session jalan di channel ini dulu ya~"
+            "⚠️ Shaula couldn't create a thread (missing 'Create Public Threads' permission). "
+            "Running in this channel instead, Shisou~"
         )
         return channel
 
@@ -130,8 +131,8 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         # Conflict guard: never run two prompts on the same session at once.
         if sess and sess.busy:
             await channel.send(
-                "⏳ Shaula masih ngerjain prompt sebelumnya di session ini, Shisou~ "
-                "Tunggu yang ini kelar dulu, terus kirim lagi ya."
+                "⏳ Shaula is still working on the previous prompt in this session, Shisou~! "
+                "Please wait until it finishes, then send it again~"
             )
             return
         if sess is None:
@@ -159,17 +160,17 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         threshold = config.CLAUDE_COMPACT_THRESHOLD_TOKENS
         if resume and threshold > 0 and sess.last_context_tokens >= threshold:
             await channel.send(
-                f"🗜️ *Context di thread ini udah gede banget (~{sess.last_context_tokens // 1000}k "
-                f"token), Shaula ringkas dulu biar enteng ya, Shisou~ (✧ω✧)*"
+                f"🗜️ *Context in this thread is getting large (~{sess.last_context_tokens // 1000}k "
+                f"tokens), Shaula will compact it first to keep things snappy, Shisou~! (✧ω✧)*"
             )
             ok = await claude_runner.run_compaction(
                 session_id, sess.project_dir, config_dir=account_config_dir
             )
             if ok:
                 sess.last_context_tokens = 0  # reset estimate; the next real turn refills it
-                await channel.send("✅ *Udah dikompres~ lanjut kerjain prompt-nya sekarang!*")
+                await channel.send("✅ *Context compacted~ continuing with your prompt now, Shisou!*")
             else:
-                await channel.send("⚠️ *Compress gagal, Shaula lanjut apa adanya aja ya~*")
+                await channel.send("⚠️ *Compaction failed, Shaula will proceed as is, Shisou~*")
 
     # Record this run in the durable history DB (debug aid; fail-safe, never blocks the task).
     await run_store.start_run(
@@ -186,7 +187,7 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
         status_msg = await channel.send(embed=make_running_embed(task))
     except discord.HTTPException as e:
         logger.warning("Running-embed send failed (%s) — falling back to plain text", e)
-        status_msg = await channel.send("⚙️ Shaula mulai ngerjain task ini ya, Shisou~")
+        status_msg = await channel.send("⚙️ Shaula is starting on this task now, Shisou~! (๑•̀ㅂ•́)و✧")
     last_text = ""
 
     async def on_chunk(text: str):
@@ -201,28 +202,52 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
             pass
 
     async def on_input_needed(proc, prompt: str):
-        """Claude Code subprocess is waiting for stdin input."""
-        await channel.send(
-            f"⏸️ **{_persona()} butuh input dari Shisou!**\n"
-            f"> `{prompt[:200]}`\n"
-            f"Ketik responnya di sini~ (atau `cancel` untuk batalkan, timeout 5 menit)"
+        """Subprocess is waiting for stdin input."""
+        from views.plan_view import InputPromptButtonsView
+        options = []
+        low = prompt.lower()
+        if any(k in low for k in ("(y/n)", "[y/n]", "(yes/no)", "[yes/no]", "y/n?", "y/n")):
+            options = ["Yes", "No"]
+        else:
+            q_info = claude_runner.extract_question_and_options(prompt)
+            if q_info:
+                options = q_info.get("options", [])
+
+        view = (
+            InputPromptButtonsView(channel.id, task.creator_id, options)
+            if options
+            else None
         )
+        tip = " or click an option button below" if options else ""
+        msg = await channel.send(
+            f"⏸️ **{_persona()} needs input from Shisou!**\n"
+            f"> `{prompt[:200]}`\n"
+            f"Type your response here{tip}~ (or `cancel` to abort, 5 min timeout)",
+            view=view,
+        )
+        if view:
+            view.message = msg
         try:
             user_input = await stdin_relay.wait_for_input(channel.id, timeout=300.0)
             if proc.stdin and not proc.stdin.is_closing():
                 proc.stdin.write((user_input + "\n").encode())
                 await proc.stdin.drain()
-                await channel.send(f"✅ Input dikirim~")
+                await channel.send(f"✅ Input sent, Shisou~")
         except asyncio.TimeoutError:
-            await channel.send("⏰ Timeout, process dilanjutkan tanpa input.")
+            await channel.send("⏰ Timed out, continuing process without input, Shisou~")
         except asyncio.CancelledError:
-            await channel.send("❌ Input dibatalkan.")
+            await channel.send("❌ Input cancelled, Shisou~")
             proc.kill()
 
     try:
+        def on_session_id_resolved(sid: str):
+            if sess:
+                sess.session_id = sid
+
         success = await claude_runner.run_execution(
             task, on_chunk=on_chunk, on_input_needed=on_input_needed,
             session_id=session_id, resume=resume, config_dir=account_config_dir,
+            on_session_id=on_session_id_resolved,
         )
     finally:
         if sess:
@@ -267,13 +292,27 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
                 embed=make_done_embed(task, full_output),
             )
         # Add task result to conversation history so Emilia remembers what was done
-        summary = f"[Task selesai: {task.description[:150]}. Output singkat: {full_output[:400]}]"
+        summary = f"[Task complete: {task.description[:150]}. Brief output: {full_output[:400]}]"
         conversation.add_message(channel.id, "user", summary)
+
+        # Auto-upload files requested via [UPLOAD: <path>] tag
+        import re
+        upload_matches = re.findall(r'\[UPLOAD:\s*([^\s\]]+)(?:\s+([^\]]+))?\]', full_output)
+        for fpath, caption in upload_matches:
+            fpath = fpath.strip()
+            if not os.path.isabs(fpath):
+                fpath = os.path.join(WORKSPACE_DIR, fpath)
+            if os.path.isfile(fpath):
+                try:
+                    cap = caption.strip() if caption else f"📄 **Uploaded for Shisou:** `{os.path.basename(fpath)}`"
+                    await channel.send(cap, file=discord.File(fpath))
+                except Exception as e:
+                    logger.warning("Auto-upload tag failed for %s: %s", fpath, e)
     else:
         reason = claude_runner.failure_reason(task, persona=_persona())
         err_for_db = reason
         await status_msg.edit(content=None, embed=make_failed_embed(task, reason))
-        conversation.add_message(channel.id, "user", f"[Task gagal — {reason[:150]}]")
+        conversation.add_message(channel.id, "user", f"[Task failed — {reason[:150]}]")
 
     await run_store.finish_run(
         task.task_id, "DONE" if success else "FAILED", task.cost_usd, err_for_db
@@ -281,11 +320,32 @@ async def _execute_and_stream(task, channel: discord.TextChannel, use_session: b
 
     if session_alive:
         persona = _persona()
+        # If the turn ended with a question offering options, present them as interactive buttons
+        from views.plan_view import SessionQuestionChoiceView
+        q_info = claude_runner.extract_question_and_options(
+            full_output, session_id=sess.session_id if sess else None
+        )
+        if q_info and q_info.get("options"):
+            q_options = q_info["options"]
+            q_text = q_info.get("question", "Please select an option below, Shisou~")
+            choice_view = SessionQuestionChoiceView(
+                channel=channel,
+                creator_id=task.creator_id,
+                options=q_options,
+                persona=persona,
+            )
+            choice_msg = await channel.send(
+                f"❓ **{persona} has a question for Shisou:**\n> {q_text}\n"
+                f"*Click an option button below, Shisou~ 👇*",
+                view=choice_view,
+            )
+            choice_view.message = choice_msg
+
         view = StopSessionView(sess.channel_id, persona=persona)
+        engine_label = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"
         notice = await channel.send(
-            f"🟢 *Session Claude aktif (turn {sess.turns}, id `{sess.session_id[:8]}`) — bales "
-            f"aja buat lanjutin obrolan ke session yang sama. Ketik `selesai` / `stop session` "
-            f"atau tekan tombol di bawah kalau mau {persona} tutup~*",
+            f"🟢 *Session {engine_label} active (turn {sess.turns}, id `{sess.session_id[:8]}`) — "
+            f"reply in this thread to continue the conversation. Type `stop session` or click the button below to close it~*",
             view=view,
         )
         view.message = notice
@@ -301,59 +361,114 @@ class TaskCommands(commands.Cog):
         claude_runner.ensure_project_dir(task)
         await _execute_and_stream(task, channel)
 
-    @app_commands.command(name="task", description="Send a task to Claude Code")
-    @app_commands.describe(description="What should Claude do?")
-    async def task_cmd(self, interaction: discord.Interaction, description: str):
+    @app_commands.command(
+        name="run",
+        description="Send and execute a task with Shaula (AI DevOps executor)",
+    )
+    @app_commands.describe(
+        description="What should Shaula work on?",
+        kantor="Run with office account (fallback engine Claude only)",
+    )
+    async def run_cmd(
+        self, interaction: discord.Interaction, description: str, kantor: bool = False
+    ):
         await interaction.response.defer()
-        # Same flow as chatting with Shaula: auto-execute in a continuable session.
-        # No plan-mode gate — it's unused here and only ever errored out ("sekali jalan").
+        if kantor and config.CLI_ENGINE == "claude":
+            if not config.CLAUDE_KANTOR_CONFIG_DIR or not os.path.isdir(config.CLAUDE_KANTOR_CONFIG_DIR):
+                await interaction.followup.send(
+                    "⚠️ Office account is not configured, Shisou~ "
+                    f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` not found."
+                )
+                return
+
+            record = task_store.create_task(
+                description=description,
+                creator_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel_id=interaction.channel_id,
+            )
+            claude_runner.ensure_project_dir(record)
+
+            await interaction.followup.send(
+                f"🟣 Running with **office account** (auto mode), Shisou~\n`{description[:120]}`"
+            )
+            await _execute_and_stream(
+                record, interaction.channel, config_dir=config.CLAUDE_KANTOR_CONFIG_DIR
+            )
+        else:
+            engine_str = f" [{config.CLI_ENGINE}]" if config.CLI_ENGINE else ""
+            await interaction.followup.send(
+                f"📨 Task received{engine_str} — Shaula will work on it in the thread, Shisou~! (✧ω✧)\n`{description[:120]}`"
+            )
+            await run_task_flow(
+                description=description,
+                creator_id=interaction.user.id,
+                guild_id=interaction.guild_id,
+                channel=interaction.channel,
+            )
+
+    @app_commands.command(name="task", description="Alias for /run")
+    @app_commands.describe(description="What should Shaula work on?")
+    async def task_cmd(self, interaction: discord.Interaction, description: str):
+        await self.run_cmd(interaction, description, kantor=False)
+
+    @app_commands.command(
+        name="task-kantor",
+        description="Alias for /run kantor:True (fallback office account Claude)",
+    )
+    @app_commands.describe(description="What should Shaula work on?")
+    async def task_kantor_cmd(self, interaction: discord.Interaction, description: str):
+        await self.run_cmd(interaction, description, kantor=True)
+
+    @app_commands.command(
+        name="plan",
+        description="Plan a task with Shaula featuring interactive clarifying questions",
+    )
+    @app_commands.describe(
+        description="What do you want to plan?",
+        kantor="Run with office account (fallback engine Claude only)",
+    )
+    async def plan_cmd(
+        self, interaction: discord.Interaction, description: str, kantor: bool = False
+    ):
+        await interaction.response.defer()
+        engine_str = f" [{config.CLI_ENGINE}]" if config.CLI_ENGINE else ""
         await interaction.followup.send(
-            f"📨 Task diterima — Shaula kerjain di thread ya, Shisou~\n`{description[:120]}`"
+            f"📋 Planning task{engine_str} — Shaula is opening a thread for discussion & clarification, Shisou~! (✧ω✧)\n`{description[:120]}`"
         )
-        await run_task_flow(
+        account_config_dir = (
+            config.CLAUDE_KANTOR_CONFIG_DIR
+            if (kantor and config.CLI_ENGINE == "claude")
+            else None
+        )
+        await run_plan_flow(
             description=description,
             creator_id=interaction.user.id,
             guild_id=interaction.guild_id,
             channel=interaction.channel,
+            config_dir=account_config_dir,
         )
 
     @app_commands.command(
-        name="task-kantor",
-        description="Run a task using the 'kantor' Claude account (fallback when the main account is rate-limited)",
+        name="run-file",
+        description="Read plan from a file (.md etc.) and execute it as a Shaula task",
     )
-    @app_commands.describe(description="What should Claude do?")
-    async def task_kantor_cmd(self, interaction: discord.Interaction, description: str):
-        await interaction.response.defer()
-
-        if not config.CLAUDE_KANTOR_CONFIG_DIR or not os.path.isdir(config.CLAUDE_KANTOR_CONFIG_DIR):
-            await interaction.followup.send(
-                "⚠️ Akun kantor belum ke-setup, Shisou~ "
-                f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` nggak ketemu."
-            )
-            return
-
-        record = task_store.create_task(
-            description=description,
-            creator_id=interaction.user.id,
-            guild_id=interaction.guild_id,
-            channel_id=interaction.channel_id,
-        )
-        claude_runner.ensure_project_dir(record)
-
-        await interaction.followup.send(
-            f"🟣 Jalanin pakai **akun kantor** (auto mode), Shisou~\n`{description[:120]}`"
-        )
-        await _execute_and_stream(
-            record, interaction.channel, config_dir=config.CLAUDE_KANTOR_CONFIG_DIR
-        )
+    @app_commands.describe(
+        path="Plan file path — absolute or relative to /home/ubuntu/workspace",
+        kantor="Run with office account (fallback engine Claude only)",
+    )
+    async def run_file_cmd(
+        self, interaction: discord.Interaction, path: str, kantor: bool = False
+    ):
+        await self.task_file_cmd(interaction, path, kantor=kantor)
 
     @app_commands.command(
         name="task-file",
-        description="Baca plan dari file (.md dll) lalu jalanin sebagai task Shaula",
+        description="Alias for /run-file",
     )
     @app_commands.describe(
-        path="Path file plan — absolut atau relatif ke /home/ubuntu/workspace",
-        kantor="Jalanin pakai akun kantor (default: akun utama)",
+        path="Plan file path — absolute or relative to /home/ubuntu/workspace",
+        kantor="Run with office account (fallback engine Claude only)",
     )
     async def task_file_cmd(
         self, interaction: discord.Interaction, path: str, kantor: bool = False
@@ -364,24 +479,24 @@ class TaskCommands(commands.Cog):
             path if os.path.isabs(path) else os.path.join(WORKSPACE_DIR, path)
         )
         if not os.path.isfile(full):
-            await interaction.followup.send(f"❌ File nggak ketemu, Shisou~: `{full}`")
+            await interaction.followup.send(f"❌ File not found, Shisou~: `{full}`")
             return
         try:
             with open(full, encoding="utf-8", errors="replace") as f:
                 content = f.read().strip()
         except Exception as e:
-            await interaction.followup.send(f"❌ Gagal baca file: `{e}`")
+            await interaction.followup.send(f"❌ Failed to read file, Shisou~: `{e}`")
             return
         if not content:
             await interaction.followup.send(
-                f"⚠️ File `{os.path.basename(full)}` kosong — nggak ada yang dijalanin."
+                f"⚠️ File `{os.path.basename(full)}` is empty — nothing to run, Shisou~"
             )
             return
         MAX_PLAN = 100_000  # ~100 KB; guards against a stray huge file blowing up tokens
         if len(content) > MAX_PLAN:
             await interaction.followup.send(
-                f"⚠️ Plan-nya kepanjangan ({len(content) // 1000} KB > {MAX_PLAN // 1000} KB), "
-                "pecah dulu ya Shisou~"
+                f"⚠️ Plan is too long ({len(content) // 1000} KB > {MAX_PLAN // 1000} KB), "
+                "please split it first, Shisou~"
             )
             return
 
@@ -393,8 +508,8 @@ class TaskCommands(commands.Cog):
                 config.CLAUDE_KANTOR_CONFIG_DIR
             ):
                 await interaction.followup.send(
-                    "⚠️ Akun kantor belum ke-setup, Shisou~ "
-                    f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` nggak ketemu."
+                    "⚠️ Office account is not configured, Shisou~ "
+                    f"Config dir `{config.CLAUDE_KANTOR_CONFIG_DIR}` not found."
                 )
                 return
             record = task_store.create_task(
@@ -405,14 +520,14 @@ class TaskCommands(commands.Cog):
             )
             claude_runner.ensure_project_dir(record)
             await interaction.followup.send(
-                f"🟣 Baca plan dari **{fname}** ({size_kb:.1f} KB) — jalanin pakai **akun kantor** ya, Shisou~"
+                f"🟣 Reading plan from **{fname}** ({size_kb:.1f} KB) — running with **office account**, Shisou~"
             )
             await _execute_and_stream(
                 record, interaction.channel, config_dir=config.CLAUDE_KANTOR_CONFIG_DIR
             )
         else:
             await interaction.followup.send(
-                f"📄 Baca plan dari **{fname}** ({size_kb:.1f} KB) — Shaula kerjain di thread ya, Shisou~"
+                f"📄 Reading plan from **{fname}** ({size_kb:.1f} KB) — Shaula will work on it in the thread, Shisou~! (✧ω✧)"
             )
             await run_task_flow(
                 description=content,
@@ -454,9 +569,155 @@ async def run_task_flow(
     }.get(record.risk_level, "🟢")
     note = ""
     if record.risk_level == RiskLevel.DANGEROUS:
-        note = " *(operasi berisiko — Shaula tetap jalanin auto; tekan 🛑 Stop kalau perlu hentikan)*"
+        note = " *(risky operation — Shaula will still run in auto; press 🛑 Stop if you need to abort, Shisou~)*"
     await channel.send(f"{risk_icon} Running: `{description[:120]}`{note}")
     await _execute_and_stream(record, channel)
+
+
+async def run_plan_flow(
+    description: str,
+    creator_id: int,
+    guild_id: int,
+    channel: discord.TextChannel,
+    config_dir: str | None = None,
+) -> None:
+    """
+    Interactive planning flow:
+    1. Opens/uses a dedicated thread for the plan.
+    2. Analyzes codebase and asks Shisou clarifying multiple-choice questions via buttons.
+    3. Synthesizes answers into a full implementation plan.
+    4. Presents the plan and provides a 1-click execution button.
+    """
+    from services import bots
+    channel = bots.shaula_channel(channel)
+    task = task_store.create_task(
+        description=description,
+        creator_id=creator_id,
+        guild_id=guild_id,
+        channel_id=channel.id,
+    )
+    claude_runner.ensure_project_dir(task)
+
+    thread = await _ensure_session_thread(channel, task)
+    if isinstance(thread, discord.Thread):
+        desc_clean = " ".join(description.split())[:80]
+        try:
+            await thread.edit(name=f"📋 Plan: {desc_clean}")
+        except Exception:
+            pass
+
+    persona = _persona()
+    init_msg = await thread.send(
+        f"📋 **Shaula is analyzing Shisou's requirements and preparing options/questions first~** ✨\n"
+        f"Please wait a moment, Shisou~ (✧ω✧)"
+    )
+
+    questions = await claude_runner.generate_plan_questions(task, config_dir=config_dir)
+
+    qna = []
+    if questions:
+        await init_msg.edit(
+            content=(
+                f"✨ Shaula has analyzed the codebase! There are **{len(questions)} points** "
+                f"that need clarification to make the plan just right. Please select an option below, Shisou~ 👇"
+            )
+        )
+        for idx, q_item in enumerate(questions):
+            q_text = q_item.get("question", "").strip()
+            opts = q_item.get("options", [])
+            if not q_text or not opts:
+                continue
+
+            num_emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"]
+            formatted_opts = []
+            for o_idx, opt in enumerate(opts[:4]):
+                emo = num_emojis[o_idx] if o_idx < len(num_emojis) else "🔹"
+                formatted_opts.append(f"{emo} {opt}")
+
+            options_display = "\n".join(formatted_opts)
+            msg_content = (
+                f"**Question {idx + 1} of {len(questions)}:**\n"
+                f"> **{q_text}**\n\n"
+                f"{options_display}"
+            )
+
+            fut = asyncio.get_running_loop().create_future()
+            view = PlanQuestionView(
+                creator_id=creator_id,
+                options=opts,
+                future=fut,
+                persona=persona,
+                timeout=300.0,
+            )
+            q_msg = await thread.send(content=msg_content, view=view)
+            view.message = q_msg
+
+            try:
+                selected_answer = await fut
+            except Exception:
+                selected_answer = opts[0] if opts else "As Shaula wishes"
+
+            qna.append({"question": q_text, "answer": selected_answer})
+    else:
+        await init_msg.edit(
+            content=(
+                "💡 Shisou's requirements are crystal clear! "
+                "Shaula will craft the full Implementation Plan right away~ 🚀 (✧ω✧)"
+            )
+        )
+
+    plan_status_msg = await thread.send("📝 **Drafting comprehensive Implementation Plan...**")
+    plan_text = await claude_runner.generate_final_plan(task, qna, config_dir=config_dir)
+
+    if not plan_text:
+        await plan_status_msg.edit(
+            content="⚠️ Sorry Shisou, Shaula couldn't generate the plan. "
+            "You can try running directly via `/run` or try again, Shisou~"
+        )
+        return
+
+    task.plan_text = plan_text
+    try:
+        await plan_status_msg.delete()
+    except Exception:
+        pass
+
+    header = "📋 **Implementation Plan is Ready, Shisou!** ٩(◕‿◕｡)۶\n\n"
+    if len(plan_text) + len(header) <= 1900:
+        await thread.send(f"{header}{plan_text}")
+    else:
+        preview = plan_text[:1200]
+        await thread.send(
+            f"{header}>>> {preview}...\n\n*(Full plan is quite long, Shaula attached the `.md` file below, Shisou~)*",
+            file=discord.File(
+                io.BytesIO(plan_text.encode("utf-8")),
+                filename=f"plan_{task.task_id[:8]}.md",
+            ),
+        )
+
+    async def _on_confirm_execute(exec_channel):
+        exec_task = task_store.create_task(
+            description=(
+                f"Execute the following plan approved by Shisou:\n\n{plan_text}"
+            ),
+            creator_id=creator_id,
+            guild_id=guild_id,
+            channel_id=exec_channel.id,
+        )
+        claude_runner.ensure_project_dir(exec_task)
+        await _execute_and_stream(exec_task, exec_channel, config_dir=config_dir)
+
+    exec_view = PlanExecuteView(
+        creator_id=creator_id,
+        on_execute=_on_confirm_execute,
+        persona=persona,
+        timeout=900.0,
+    )
+    exec_msg = await thread.send(
+        "👇 **What do you think, Shisou? Should Shaula execute this plan now?** (✧ω✧)",
+        view=exec_view,
+    )
+    exec_view.message = exec_msg
 
 
 async def setup(bot: commands.Bot):

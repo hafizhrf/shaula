@@ -26,7 +26,7 @@ class AskCommands(commands.Cog):
                 await interaction.followup.send(chunk)
         else:
             await interaction.followup.send(
-                "⚠️ Hermes (Ollama) is not available right now. Use `/task` to send tasks to Claude Code."
+                "⚠️ Hermes (Ollama) is not available right now. Use `/run` or `/task` to send tasks to Shaula, Shisou~"
             )
 
 

@@ -1,20 +1,21 @@
 # Shaula — Discord DevOps Bot
 
-A Discord bot for operating a single Ubuntu 24.04 VPS. It exposes two Discord identities
-running inside **one Python process**:
+A Discord bot for operating a single Ubuntu 24.04 VPS with autonomous AI coding agents. It exposes two Discord identities running inside **one Python process**:
 
-- **Shaula** (`ShaulaBot`) — the **executor**. Runs real DevOps work by spawning the
-  [Claude Code](https://claude.com/claude-code) CLI (`/usr/bin/claude`) as a subprocess.
-  Owns all session threads and addresses the user as *"Shisou"*. This is the client that
-  actually connects in production.
-- **Emilia** (`DevOpsBot`) — an optional **front-end persona** powered by a small local
-  model (Hermes 3B via Ollama) for chat and intent routing. In the current production
-  setup this in-repo Emilia is **disabled** (see [`EMILIA_ENABLED`](#emilia_enabled--the-two-deployment-modes)).
+- **Shaula** (`ShaulaBot`) — the **executor**. Runs real DevOps work by spawning a headless AI CLI: either **Google Antigravity CLI** (`agy`) or **Anthropic Claude Code** (`claude`). Owns all session threads and addresses the user as *"Shisou"*. This is the client that connects in production.
+- **Emilia** (`DevOpsBot`) — an optional **front-end persona** powered by a small local model (Hermes 3B via Ollama) for chat and intent routing. In the current production setup, this in-repo Emilia is **disabled** (see [`EMILIA_ENABLED`](#emilia_enabled--the-two-deployment-modes)).
 
-Real work is done full-auto by Claude Code; only `/deploy` is gated behind an approval
-button. For the full architecture, message flow, and internals, see
-[`AGENTS.md`](AGENTS.md). Runtime operating rules for the executing agent live in
-[`CLAUDE.md`](CLAUDE.md).
+Real work is executed full-auto; `/plan` offers interactive clarifying choices, and `/deploy` is gated behind an approval button. For architecture and internals, see [`AGENTS.md`](AGENTS.md). Operating rules for the executing agent live in [`CLAUDE.md`](CLAUDE.md).
+
+---
+
+## Features
+
+- ⚡ **Dual AI Engine Support**: Seamlessly switch between **Antigravity CLI (`agy`)** and **Claude Code (`claude`)** via `CLI_ENGINE`.
+- 📋 **Interactive `/plan` Flow**: Shaula analyzes the codebase and asks clarifying questions using Discord button options (`1️⃣`, `2️⃣`, `3️⃣`, `⏩ As Shaula wishes`). Synthesizes answers into a full Markdown plan with a 1-click `[ 🚀 Execute Plan ]` button.
+- ❓ **Auto Button Prompts in `/run`**: When the agent encounters architectural ambiguities or questions during `/run`, Discord buttons are dynamically attached to the turn message so Shisou can click to reply.
+- 📤 **Direct File Upload (`discord-upload`)**: CLI helper and automatic `[UPLOAD: <path>]` tag parsing that directly attaches and sends files to the active Discord thread without confusing the model.
+- 🌐 **Universal Language Support**: Defaults to English, but automatically detects Indonesian prompts and replies with casual, energetic Indonesian while maintaining Shaula's persona.
 
 ---
 
@@ -22,9 +23,9 @@ button. For the full architecture, message flow, and internals, see
 
 - **Ubuntu 24.04** (or similar Linux) — the bot is designed to operate its host VPS.
 - **Python 3.12+**
-- **[Claude Code CLI](https://claude.com/claude-code)** at `/usr/bin/claude` (or set
-  `CLAUDE_BIN`). Authenticated either via `claude login` (Pro/Max subscription) or an
-  `ANTHROPIC_API_KEY`.
+- **AI CLI Executor** (at least one):
+  - **[Antigravity CLI (agy)](https://github.com/google)** at `/home/ubuntu/.local/bin/agy` (or configure `AGY_BIN`).
+  - **[Claude Code CLI](https://claude.com/claude-code)** at `/usr/bin/claude` (or configure `CLAUDE_BIN`). Authenticated either via `claude login` (Pro/Max subscription) or an `ANTHROPIC_API_KEY`.
 - **Docker** (optional) — for the `/docker-status` and `/docker-logs` commands.
 - **Ollama** (optional) — only needed if you enable the in-repo Emilia front-end
   (`EMILIA_ENABLED=true`).
@@ -32,7 +33,7 @@ button. For the full architecture, message flow, and internals, see
   created at the [Discord Developer Portal](https://discord.com/developers/applications).
 
 Python dependencies (`requirements.txt`): `discord.py`, `psutil`, `docker`,
-`python-dotenv`.
+`python-dotenv`, `aiohttp`.
 
 ---
 
@@ -82,25 +83,32 @@ list of every setting; `.env.example` mirrors it with placeholder values. **Copy
 | `DISCORD_TOKEN` | Emilia's bot token. Required by config even in Shaula-only mode (it's owned by the external gateway there). |
 | `DISCORD_GUILD_ID` | The Discord server (guild) ID where slash commands are registered. |
 
-**Most-used optional settings** (full list and defaults in `config.py`):
+**Executor Engine Settings (Antigravity & Claude)**
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `CLI_ENGINE` | `claude` | Which agent CLI to summon: `'agy'` (Antigravity CLI) or `'claude'` (Claude Code). |
+| `AGY_BIN` | `/home/ubuntu/.local/bin/agy` | Path to the Antigravity CLI binary. |
+| `AGY_MODEL` | *(blank)* | Model override for `agy` (e.g. `gemini-3.8-flash-high`, `gemini-3.1-pro-high`). Blank = CLI default. |
+| `CLAUDE_BIN` | `/usr/bin/claude` | Path to the Claude Code CLI binary. |
+| `CLAUDE_MODEL` | *(blank)* | Model override for Claude Code. Blank = account default (e.g. `sonnet`). |
+| `CLAUDE_KANTOR_CONFIG_DIR` | `~/.claude-kantor` | Alternate config directory for fallback Claude work account. |
+| `ANTHROPIC_API_KEY` | *(blank)* | Blank = use `claude login` OAuth. Set `sk-ant-…` for API-key auth. |
+
+**Other Most-Used Optional Settings** (full list in `config.py`):
 
 | Var | Default | Meaning |
 |-----|---------|---------|
 | `SHAULA_DISCORD_TOKEN` | *(blank)* | Shaula's bot token. Blank = Shaula disabled. |
 | `EMILIA_ENABLED` | `true` | Whether the in-process Emilia client connects. See below. |
-| `ANTHROPIC_API_KEY` | *(blank)* | Blank = use `claude login` OAuth. Set `sk-ant-…` for API-key auth. |
-| `CLAUDE_BIN` | `/usr/bin/claude` | Path to the Claude Code CLI. |
-| `CLAUDE_MODEL` | *(blank)* | Model for tasks. Blank = account default. e.g. `sonnet`. |
 | `CLAUDE_MAX_BUDGET_USD` | `0` | Per-task cost cap. `0` = no cap. |
 | `PROJECTS_BASE_DIR` | `/opt/agent/projects` | Base cwd for session working directories. |
 | `DEVOPS_ROLE_ID` / `ADMIN_ROLE_ID` | `0` | Roles allowed to approve `/deploy`. `0` = unset. |
 | `STATUS_CHANNEL_ID` | `0` | Channel for restart/up notices. `0` = auto. |
+| `DELEGATE_INTAKE_PORT` | `8765` | Localhost HTTP port for task delegation and file uploads. |
+| `DELEGATE_INTAKE_TOKEN` | *(blank)* | Shared secret for `/delegate` and `/upload` endpoints. |
 
-Other groups: execution watchdog (`EXEC_IDLE_TIMEOUT_SECONDS`,
-`EXEC_MAX_TIMEOUT_SECONDS`, `CLAUDE_SESSION_IDLE_SECONDS`), Ollama (`OLLAMA_HOST`,
-`OLLAMA_MODEL`, `OLLAMA_KEEP_ALIVE`), Dify RAG (`DIFY_*`), Cloudflare DNS (`CF_*`,
-`VPS_PUBLIC_IP`), and the delegation intake (`DELEGATE_INTAKE_PORT`,
-`DELEGATE_INTAKE_TOKEN`). See `.env.example` for the annotated template.
+Other groups: execution watchdog (`EXEC_IDLE_TIMEOUT_SECONDS`, `EXEC_MAX_TIMEOUT_SECONDS`, `CLAUDE_SESSION_IDLE_SECONDS`), Ollama (`OLLAMA_HOST`, `OLLAMA_MODEL`), Dify RAG (`DIFY_*`), and Cloudflare DNS (`CF_*`, `VPS_PUBLIC_IP`). See `.env.example`.
 
 ### `EMILIA_ENABLED` & the two deployment modes
 
@@ -127,22 +135,34 @@ this one process.
 
 ---
 
-## Slash commands
+## Slash Commands
 
-| Command | Notes |
-|---------|-------|
-| `/task <description>` | Full-auto Claude task in a session thread. |
-| `/task-kantor <description>` | Same, using the fallback Claude account (rate-limit escape). |
-| `/task-file <path> [kantor]` | Read a plan file (≤100 KB) and run it as a task. |
+| Command | Description |
+|---------|-------------|
+| `/run <description> [kantor]` | Send and execute a task with Shaula (AI DevOps executor). |
+| `/plan <description> [kantor]` | Interactive planning with Shaula featuring multiple-choice questions & 1-click execution. |
+| `/run-file <path> [kantor]` | Read plan from a file (`.md`, etc.) and execute it as a Shaula task. |
+| `/task <description>` | Alias for `/run`. |
+| `/task-file <path> [kantor]` | Alias for `/run-file`. |
+| `/task-kantor <description>` | Alias for `/run kantor:True` (fallback office account Claude). |
+| `/stop-task [task_id]` | Stop running tasks and close Shaula's session. |
+| `/runs [limit]` | View recent execution history from the durable SQLite DB. |
+| `/run-detail <id>` | Details of a specific run or all turns in a session. |
+| `/readfile <path>` | Read file contents and display in Discord (inline or attachment). |
+| `/server-health` | Show VPS CPU, RAM, and disk stats. |
+| `/docker-status` · `/docker-logs <name>` | Docker container status and logs via the Docker SDK. |
 | `/deploy <target>` | **Approval-gated**: plan → approve → execute. |
-| `/runs [limit]` · `/run <id>` | Query the durable run-history DB. |
-| `/stop-task [task_id]` | Stop a running task and close its session. |
-| `/server-health` | CPU / RAM / disk / uptime. |
-| `/docker-status` · `/docker-logs <name>` | Docker status/logs via the Docker SDK. |
-| `/readfile <path>` | Show a file in Discord. |
 
-`/corrections` and `/reset-session` are Emilia-side and only registered when
-`EMILIA_ENABLED=true`.
+*(Emilia-side commands `/corrections` and `/reset-session` are registered when `EMILIA_ENABLED=true`).*
+
+---
+
+## Direct File Upload Helper
+
+Shaula includes a file upload bridge to send files directly to the active Discord thread:
+- **CLI Command**: Run `discord-upload <file_path> [caption]` from any shell script or task execution.
+- **Model Output Tag**: Outputting `[UPLOAD: /path/to/file]` in Shaula's response automatically uploads the referenced file.
+- Uses localhost intake `POST http://127.0.0.1:8765/upload` authorized with `DELEGATE_INTAKE_TOKEN`.
 
 ---
 

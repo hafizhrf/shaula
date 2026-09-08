@@ -36,13 +36,13 @@ class RunsCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="runs", description="Lihat history run Claude/Shaula terakhir")
-    @app_commands.describe(limit="Berapa run terakhir (default 10, max 25)")
+    @app_commands.command(name="runs", description="View recent execution history")
+    @app_commands.describe(limit="Number of recent runs to show (default 10, max 25)")
     async def runs_cmd(self, interaction: discord.Interaction, limit: int = 10):
         await interaction.response.defer()
         rows = await run_store.recent(limit)
         if not rows:
-            await interaction.followup.send("📭 Belum ada run yang kecatat, Shisou~")
+            await interaction.followup.send("📭 No run history recorded yet, Shisou~")
             return
 
         lines = []
@@ -57,21 +57,21 @@ class RunsCommands(commands.Cog):
                 f"${cost:.3f} · {acct} · {_when(r)}"
             )
         embed = discord.Embed(
-            title=f"🗂️ Run history (terakhir {len(rows)})",
+            title=f"🗂️ Run history (last {len(rows)})",
             description="\n".join(lines),
             color=discord.Color.blurple(),
         )
-        embed.set_footer(text="Detail: /run <id>  (task_id atau session_id, 8 char awal cukup)")
+        embed.set_footer(text="Detail: /run-detail <id> (task_id or session_id, first 8 chars)")
         await interaction.followup.send(embed=embed)
 
-    @app_commands.command(name="run", description="Detail satu run / semua turn dari sebuah session")
-    @app_commands.describe(id="task_id atau session_id (boleh 8 char pertama aja)")
+    @app_commands.command(name="run-detail", description="Details of a specific run or all turns in a session")
+    @app_commands.describe(id="task_id or session_id (first 8 characters are enough)")
     async def run_cmd(self, interaction: discord.Interaction, id: str):
         await interaction.response.defer()
         rows = await run_store.get(id)
         if not rows:
             await interaction.followup.send(
-                f"🔍 Nggak ketemu run dengan id `{id}`, Shisou~ (coba `/runs` buat lihat daftarnya)"
+                f"🔍 No runs found for ID `{id}`, Shisou~ (try `/runs` to view recent list)"
             )
             return
 
@@ -79,7 +79,7 @@ class RunsCommands(commands.Cog):
         head = rows[0]
         sid = (head.get("session_id") or "--------")[:8]
         embed = discord.Embed(
-            title=f"🧵 Session `{sid}` — {len(rows)} turn",
+            title=f"🧵 Session `{sid}` — {len(rows)} turn(s)",
             color=discord.Color.blurple(),
         )
         for r in rows[:25]:
@@ -87,9 +87,9 @@ class RunsCommands(commands.Cog):
             tid = (r.get("task_id") or "")[:8]
             cost = r.get("cost_usd") or 0.0
             field_lines = [
-                f"**state** {emoji} {r.get('state')}  ·  **akun** {r.get('account')}  ·  **${cost:.4f}**",
+                f"**state** {emoji} {r.get('state')}  ·  **account** {r.get('account')}  ·  **${cost:.4f}**",
                 f"**desc** {_short(r.get('description'), 300)}",
-                f"**mulai** {r.get('created_at') or '?'}  ·  **selesai** {r.get('finished_at') or '—'}",
+                f"**started** {r.get('created_at') or '?'}  ·  **finished** {r.get('finished_at') or '—'}",
             ]
             err = (r.get("error_text") or "").strip()
             if err:

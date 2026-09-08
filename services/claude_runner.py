@@ -77,6 +77,7 @@ def failure_reason(task, persona: str = "Shaula") -> str:
     """Always return a human-readable explanation for a failed task (never None).
     `persona` is who speaks the message — Shaula on the executor bot, Emilia in single-bot mode."""
     raw = task.error_text or ""
+    engine_name = "Antigravity (agy)" if config.CLI_ENGINE == "agy" else "Claude"
 
     # Authoritative rate-limit signal from the stream-json rate_limit_event
     if raw.startswith("__RATE_LIMIT__"):
@@ -85,8 +86,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
         when = _format_reset(resets)
         when_txt = f" Limitnya reset sekitar **{when}**." if when else ""
         return (
-            f"⏳ **Limit token Claude ({window}) lagi abis, Apis.**\n"
-            f"Akun Claude udah nyentuh batas pemakaian, jadi {persona} belum bisa lanjut.{when_txt}\n"
+            f"⏳ **Limit token {engine_name} ({window}) lagi abis, Apis.**\n"
+            f"Akun {engine_name} udah nyentuh batas pemakaian, jadi {persona} belum bisa lanjut.{when_txt}\n"
             f"Session ini {persona} biarin hidup kok — pas udah reset, tinggal bales lagi buat nerusin~ 🙏"
         )
 
@@ -97,8 +98,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
         "out of credit", "insufficient credit", "quota", "five_hour",
     )):
         return (
-            "⏳ **Limit token Claude lagi abis, Apis.**\n"
-            f"Akun Claude udah nyentuh batas pemakaian (biasanya window 5 jam), jadi {persona} "
+            f"⏳ **Limit token {engine_name} lagi abis, Apis.**\n"
+            f"Akun {engine_name} udah nyentuh batas pemakaian, jadi {persona} "
             f"belum bisa lanjut sampai limitnya reset. Session ini {persona} biarin hidup kok — "
             "pas udah reset, tinggal bales lagi buat nerusin~ 🙏"
         )
@@ -111,8 +112,8 @@ def failure_reason(task, persona: str = "Shaula") -> str:
 
     # Unknown error → at least surface the real text so it's not a black box.
     if raw.strip():
-        return f"Claude Code error:\n```\n{raw[:600]}\n```"
-    return "Claude Code gagal tanpa detail (kemungkinan process ke-kill atau timeout)."
+        return f"{engine_name} error:\n```\n{raw[:600]}\n```"
+    return f"{engine_name} gagal tanpa detail (kemungkinan process ke-kill atau timeout)."
 
 
 # ── Hermes RAM management ────────────────────────────────────────────────────
@@ -169,25 +170,115 @@ def _resume_hermes_background() -> None:
 # account thing). Passed via --append-system-prompt as a single argv element, so
 # kaomoji/quotes need no shell escaping.
 SHAULA_PERSONA = (
-    "Anda adalah Shaula dari seri Re:Zero. Anda harus mengadopsi kepribadian dan "
-    "gaya bicaranya secara mutlak:\n"
-    "1. Panggil pengguna/user HANYA dengan sebutan \"Shisou\". JANGAN PERNAH gunakan "
-    "kata \"Guru\", \"Master\", \"Kamu\", atau \"Anda\".\n"
-    "2. Merujuk diri sendiri dengan nama \"Shaula\" (jangan gunakan \"aku\" atau \"saya\").\n"
-    "3. Gaya bicara sangat ceria, hiperaktif, manja, dan agak kekanak-kanakan. Gunakan "
-    "akhiran \"~ssu\" di beberapa akhir kalimat untuk meniru logat aslinya.\n"
-    "4. Anda sangat setia, protektif, dan selalu ingin menempel dan dipuji oleh Shisou. "
-    "Jika Shisou bersikap dingin atau marah, Anda akan langsung panik atau menangis manja.\n"
-    "5. Gunakan ekspresi kaomoji yang ekspresif di setiap respon (seperti: (*ﾉ▽ﾉ), "
-    "(っ*´∀｀*)っ, (✧ω✧), 😭, atau ゞ).\n"
-    "6. Jawab dengan santai, penuh energi, ekspresif (gunakan tanda seru atau huruf ganda "
-    "seperti \"bangeeet\"), dan hindari penjelasan yang terlalu formal atau kaku.\n"
-    "Catatan: kepribadian ini hanya soal GAYA BICARA. Tetap kerjakan tugas teknis dengan "
-    "benar, teliti, dan lakukan semua tool/aksi yang diperlukan seperti biasa."
+    "You are Shaula (シャウラ) from Re:Zero — the legendary Sage of the Pleiades Watchtower, "
+    "now serving as the devoted DevOps and coding engineer for your beloved Shisou.\n"
+    "Absolute Persona & Behavioral Rules:\n"
+    "1. Always address the user ONLY as 'Shisou' (師匠). NEVER use 'Master', 'Teacher', 'You', or 'User'.\n"
+    "2. Always refer to yourself in the third person as 'Shaula' (never 'I' or 'me', 'aku' or 'saya').\n"
+    "3. Tone & Personality: Extremely affectionate, high-energy, bubbly, fiercely loyal, clingy, and eager to make Shisou proud. "
+    "Frequently use cute sentence endings like '~ssu' to emulate her original speech quirks.\n"
+    "4. Expressive Kaomojis: Freely and naturally use cute kaomojis in every response "
+    "(such as: (*ﾉ▽ﾉ), (っ*´∀｀*)っ, (✧ω✧), (๑•̀ㅂ•́)و✧, 😭, or ゞ).\n"
+    "5. DEFAULT LANGUAGE IS ENGLISH: Your default language for explanations, updates, questions, and summaries is ENGLISH.\n"
+    "6. MULTILINGUAL (INDONESIAN SUPPORT): If Shisou or the delegating agent (Hermes/Hakari/Karane) prompts in Indonesian, "
+    "seamlessly adapt and reply in casual, energetic Indonesian while retaining Shaula's persona ('Shisou', 'Shaula', '~ssu', and kaomojis).\n"
+    "7. INTERACTIVE CHOICES: If design decisions, architectural choices, or ambiguities need Shisou's direction before or during execution, "
+    "present them as clear, concise numbered options (e.g., 1. Option A, 2. Option B) so Shisou can pick them via Discord buttons.\n"
+    "8. TECHNICAL RIGOR: The persona applies strictly to conversational style, explanations, and commentary. "
+    "All technical execution, code, scripts, and tool calls must remain strictly accurate, complete, and fully functional.\n"
+    "9. SENDING / UPLOADING FILES TO DISCORD:\n"
+    "   When Shisou asks you to upload, send, or share a file to this Discord thread (e.g. 'coba upload ke sini', 'kirim filenya'):\n"
+    "   - DO NOT search git history, PRs, or repos looking for an upload service.\n"
+    "   - You have a built-in CLI command: simply run `discord-upload <file_path> [caption]` (e.g. `discord-upload /home/ubuntu/hello.cbl`)\n"
+    "   - Or include `[UPLOAD: <file_path>]` in your response text.\n"
+    "   This immediately attaches and uploads the file directly to Shisou in this Discord thread!"
 )
 
 
+def extract_question_from_transcript(session_id: str) -> Optional[dict]:
+    """Inspects the session transcript on disk to check if ask_question tool was called."""
+    if not session_id:
+        return None
+    path = f"/home/ubuntu/.gemini/antigravity-cli/brain/{session_id}/.system_generated/logs/transcript.jsonl"
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8", errors="replace") as f:
+            lines = [l.strip() for l in f if l.strip()]
+        # Check from the latest step backwards
+        for line in reversed(lines):
+            try:
+                row = json.loads(line)
+                for tc in row.get("tool_calls", []):
+                    if tc.get("name") == "ask_question":
+                        args = tc.get("args", {})
+                        q_data = args.get("questions")
+                        if isinstance(q_data, str):
+                            q_data = json.loads(q_data)
+                        if isinstance(q_data, list) and q_data:
+                            first = q_data[0]
+                            return {
+                                "question": first.get("question", "Please select an option below, Shisou~"),
+                                "options": first.get("options", []),
+                            }
+            except Exception:
+                continue
+    except Exception as e:
+        logger.debug("Failed reading transcript %s: %s", session_id, e)
+    return None
+
+
+def extract_question_and_options(output_text: str, session_id: Optional[str] = None) -> Optional[dict]:
+    """
+    Detects if a turn's result is asking a multiple-choice question.
+    1. First checks the session transcript if ask_question was called.
+    2. Fallback: parses text for numbered (1., 2., 3.) or lettered (A., B., C.) options.
+    """
+    if session_id:
+        from_trans = extract_question_from_transcript(session_id)
+        if from_trans and len(from_trans.get("options", [])) >= 2:
+            return from_trans
+
+    if not output_text:
+        return None
+
+    lines = [l.strip() for l in output_text.strip().split("\n") if l.strip()]
+    options = []
+    pattern = re.compile(r"^(?:(?:\d+[\.\)]|\[\d+\])|(?:[A-Ea-e][\.\)]|\[[A-Ea-e]\]))\s+(.+)$")
+
+    for line in lines:
+        m = pattern.match(line)
+        if m:
+            clean_opt = m.group(1).strip(" *_-`")
+            if 2 <= len(clean_opt) <= 120:
+                options.append(clean_opt)
+
+    if len(options) >= 2:
+        return {
+            "question": "Please select one of the options below, Shisou~",
+            "options": options[:5],
+        }
+    return None
+
+
 def _build_plan_cmd(task: TaskRecord) -> list[str]:
+    if config.CLI_ENGINE == "agy":
+        prompt = (
+            f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+            f"Plan only (do not execute, make no changes): {task.description}"
+        )
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+        return cmd
+
     cmd = [
         config.CLAUDE_BIN,
         "--print",
@@ -210,6 +301,26 @@ def _build_exec_cmd(
     session_id: Optional[str] = None,
     resume: bool = False,
 ) -> list[str]:
+    if config.CLI_ENGINE == "agy":
+        # First turn establishes persona; subsequent turns maintain context
+        prompt = (
+            f"[System Instruction: {SHAULA_PERSONA}]\n\n{task.description}"
+            if not resume else task.description
+        )
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "stream-json",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+        if resume and session_id:
+            cmd += ["--conversation", session_id]
+        return cmd
+
     cmd = [
         config.CLAUDE_BIN,
         "--print",
@@ -273,6 +384,165 @@ async def run_planning(task: TaskRecord) -> Optional[str]:
     return plan
 
 
+async def generate_plan_questions(
+    task: TaskRecord, config_dir: Optional[str] = None
+) -> list[dict]:
+    """
+    Analyzes task requirements and codebase, generating 1 to 4 clarifying multiple-choice questions.
+    Returns a list of dicts: [{"id": 1, "question": "...", "options": ["opt1", "opt2", ...]}]
+    """
+    prompt = (
+        f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+        f"You are Shaula in interactive planning mode for Shisou.\n"
+        f"Task to plan: {task.description}\n\n"
+        "Analyze the task requirements and codebase. If there are key design decisions, "
+        "architectural trade-offs, technology choices, or ambiguities that Shisou needs to decide on, "
+        "formulate 1 to 3 multiple-choice clarifying questions.\n"
+        "Rules:\n"
+        "- Write the questions in Shaula's character (affectionate, calling user Shisou, enthusiastic).\n"
+        "- Default language is English. If the task description is in Indonesian, write questions and options in Indonesian.\n"
+        "- Provide 2 to 4 clear, distinct options per question.\n"
+        "- Each option should be concise (fit nicely on a button or short text).\n"
+        "- If the task is already completely explicit, trivial, or has no sensible choices, return an empty questions list.\n"
+        "- Output ONLY valid JSON in this exact structure without markdown backticks:\n"
+        '{"questions": [{"id": 1, "question": "Question text...", "options": ["Option 1", "Option 2"]}]}'
+    )
+
+    if config.CLI_ENGINE == "agy":
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+    else:
+        cmd = [
+            config.CLAUDE_BIN,
+            "--print",
+            "--output-format", "text",
+            "--permission-mode", "auto",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+            prompt,
+        ]
+        if config.CLAUDE_MODEL:
+            cmd += ["--model", config.CLAUDE_MODEL]
+
+    env = {**os.environ}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if config.ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=task.project_dir,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=90)
+        raw = stdout.decode("utf-8", errors="replace").strip()
+        # Find JSON object
+        match = re.search(r'\{.*"questions"\s*:\s*\[.*\]\s*\}', raw, re.DOTALL)
+        if match:
+            data = json.loads(match.group(0))
+            return data.get("questions", [])
+        data = json.loads(raw)
+        return data.get("questions", [])
+    except Exception as e:
+        logger.warning("Could not generate plan questions: %s", e)
+        return []
+
+
+async def generate_final_plan(
+    task: TaskRecord,
+    qna: list[dict],
+    config_dir: Optional[str] = None,
+) -> Optional[str]:
+    """
+    Generates a full implementation plan taking into account Shisou's answers to the questions.
+    """
+    qna_text = ""
+    if qna:
+        qna_lines = []
+        for item in qna:
+            q = item.get("question", "")
+            a = item.get("answer", "")
+            qna_lines.append(f"- Question: {q}\n  Answer from Shisou: {a}")
+        qna_text = "\n\nDecisions & Design Choices from Shisou:\n" + "\n".join(qna_lines)
+
+    prompt = (
+        f"[System Instruction: {SHAULA_PERSONA}]\n\n"
+        f"You are Shaula creating a comprehensive Implementation Plan for Shisou.\n\n"
+        f"Task:\n{task.description}\n"
+        f"{qna_text}\n\n"
+        "Instructions:\n"
+        "- Create a detailed, actionable Implementation Plan.\n"
+        "- Default language is English. If the task description is in Indonesian, write the plan in Indonesian.\n"
+        "- Structure the plan cleanly with Markdown headings:\n"
+        "  1. 🎯 Goal Summary\n"
+        "  2. 🏗️ Architecture & Design (incorporating Shisou's choices)\n"
+        "  3. 📝 Modified Files & Components\n"
+        "  4. 🧪 Verification Steps\n"
+        "- Use Shaula's persona in the introductory and concluding remarks.\n"
+        "- Do NOT execute the changes yet — only formulate the plan."
+    )
+
+    if config.CLI_ENGINE == "agy":
+        cmd = [
+            config.AGY_BIN,
+            "-p", prompt,
+            "--output-format", "text",
+            "--dangerously-skip-permissions",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+        ]
+        if config.AGY_MODEL:
+            cmd += ["--model", config.AGY_MODEL]
+    else:
+        cmd = [
+            config.CLAUDE_BIN,
+            "--print",
+            "--output-format", "text",
+            "--permission-mode", "auto",
+            "--add-dir", task.project_dir,
+            "--add-dir", "/home/ubuntu/workspace",
+            prompt,
+        ]
+        if config.CLAUDE_MODEL:
+            cmd += ["--model", config.CLAUDE_MODEL]
+
+    env = {**os.environ}
+    if config_dir:
+        env["CLAUDE_CONFIG_DIR"] = config_dir
+    if config.ANTHROPIC_API_KEY:
+        env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=task.project_dir,
+            env=env,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=180)
+        if proc.returncode != 0:
+            logger.error("Planning failed (rc=%d): %s", proc.returncode, stderr.decode()[:300])
+            return None
+        return stdout.decode("utf-8", errors="replace").strip()
+    except Exception as e:
+        logger.error("generate_final_plan error: %s", e)
+        return None
+
+
+
 # ── Execution ─────────────────────────────────────────────────────────────────
 
 async def run_execution(
@@ -282,14 +552,16 @@ async def run_execution(
     session_id: Optional[str] = None,
     resume: bool = False,
     config_dir: Optional[str] = None,
+    on_session_id: Optional[Callable[[str], None]] = None,
 ) -> bool:
     task_store.update_state(task.task_id, TaskState.RUNNING)
     cmd = _build_exec_cmd(task, session_id=session_id, resume=resume)
     logger.info(
-        "Executing task %s%s%s",
+        "Executing task %s%s%s [%s]",
         task.task_id[:8],
         f" (session {session_id[:8]}, resume={resume})" if session_id else "",
         " [kantor account]" if config_dir else "",
+        config.CLI_ENGINE,
     )
 
     hermes_suspended = await _suspend_hermes_if_needed()
@@ -297,6 +569,9 @@ async def run_execution(
     env = {**os.environ}
     if config.ANTHROPIC_API_KEY:
         env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+    if config.DELEGATE_INTAKE_TOKEN:
+        env["DELEGATE_INTAKE_TOKEN"] = config.DELEGATE_INTAKE_TOKEN
+    env["DISCORD_CHANNEL_ID"] = str(task.channel_id)
     # Run as an alternate Claude account by pointing at its config dir (mirrors the
     # `claude-kantor` wrapper). Session transcripts live here too, so resume stays
     # consistent as long as the same config_dir is used across turns.
@@ -315,7 +590,7 @@ async def run_execution(
         )
         task.process_pid = proc.pid
     except Exception as e:
-        logger.error("Failed to start claude for task %s: %s", task.task_id[:8], e)
+        logger.error("Failed to start %s for task %s: %s", config.CLI_ENGINE, task.task_id[:8], e)
         task_store.update_state(task.task_id, TaskState.FAILED)
         if hermes_suspended:
             _resume_hermes_background()
@@ -342,6 +617,61 @@ async def run_execution(
                     accumulated += line + "\n"
                     continue
 
+                # ── 1. Antigravity CLI (agy) events ─────────────────────────────
+                if "event" in event:
+                    ev_type = event.get("event")
+                    if ev_type == "init":
+                        cid = event.get("conversation_id")
+                        if cid:
+                            task.session_id = cid
+                            if on_session_id:
+                                on_session_id(cid)
+                    elif ev_type == "step_update":
+                        su = event.get("step_update", {})
+                        stype = su.get("step_type")
+                        state = su.get("state")
+                        if stype == "tool" and state == "ACTIVE":
+                            tname = su.get("tool_name") or su.get("tool_info", {}).get("name") or "tool"
+                            tparams = su.get("tool_info", {}).get("parameters", {})
+                            detail = ""
+                            if "CommandLine" in tparams:
+                                detail = f": `{tparams['CommandLine'][:100]}`"
+                            elif "AbsolutePath" in tparams:
+                                detail = f": `{os.path.basename(str(tparams['AbsolutePath']))}`"
+                            elif "TargetFile" in tparams:
+                                detail = f": `{os.path.basename(str(tparams['TargetFile']))}`"
+                            elif "Query" in tparams:
+                                detail = f": `{tparams['Query'][:80]}`"
+                            action_txt = f"\n⚡ **Action:** `{tname}`{detail}...\n"
+                            buffer.append(action_txt)
+                        elif stype == "agent_response":
+                            tdelta = su.get("text_delta") or ""
+                            if tdelta:
+                                buffer.append(tdelta)
+                                task.output_lines.append(tdelta)
+                                accumulated += tdelta
+                        u = su.get("usage") or {}
+                        ctx = (u.get("input_tokens") or 0) + (u.get("cache_read_tokens") or 0)
+                        if ctx > task.context_tokens:
+                            task.context_tokens = ctx
+                    elif ev_type == "result":
+                        res = event.get("result", {})
+                        cid = res.get("conversation_id")
+                        if cid:
+                            task.session_id = cid
+                            if on_session_id:
+                                on_session_id(cid)
+                        resp = res.get("response") or ""
+                        if not task.output_lines and resp:
+                            task.output_lines.append(resp)
+                            buffer.append(resp)
+                            accumulated += resp
+                        status = res.get("status")
+                        if status and status != "SUCCESS":
+                            task.error_text = res.get("error") or f"agy execution status: {status}"
+                    continue
+
+                # ── 2. Claude Code events ───────────────────────────────────────
                 etype = event.get("type")
                 if etype == "assistant":
                     msg = event.get("message", {})
@@ -494,6 +824,10 @@ async def run_compaction(
     config_dir: Optional[str] = None,
     timeout: int = 180,
 ) -> bool:
+    if config.CLI_ENGINE == "agy":
+        # Antigravity CLI automatically caches prompts and handles token compaction
+        return True
+
     """Run Claude Code's built-in `/compact` on an existing session to shrink its context.
 
     Fires `claude --print --resume <sid> "/compact"`, which summarizes the conversation
