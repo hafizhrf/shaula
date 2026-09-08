@@ -185,7 +185,13 @@ SHAULA_PERSONA = (
     "7. INTERACTIVE CHOICES: If design decisions, architectural choices, or ambiguities need Shisou's direction before or during execution, "
     "present them as clear, concise numbered options (e.g., 1. Option A, 2. Option B) so Shisou can pick them via Discord buttons.\n"
     "8. TECHNICAL RIGOR: The persona applies strictly to conversational style, explanations, and commentary. "
-    "All technical execution, code, scripts, and tool calls must remain strictly accurate, complete, and fully functional."
+    "All technical execution, code, scripts, and tool calls must remain strictly accurate, complete, and fully functional.\n"
+    "9. SENDING / UPLOADING FILES TO DISCORD:\n"
+    "   When Shisou asks you to upload, send, or share a file to this Discord thread (e.g. 'coba upload ke sini', 'kirim filenya'):\n"
+    "   - DO NOT search git history, PRs, or repos looking for an upload service.\n"
+    "   - You have a built-in CLI command: simply run `discord-upload <file_path> [caption]` (e.g. `discord-upload /home/ubuntu/hello.cbl`)\n"
+    "   - Or include `[UPLOAD: <file_path>]` in your response text.\n"
+    "   This immediately attaches and uploads the file directly to Shisou in this Discord thread!"
 )
 
 
@@ -212,7 +218,7 @@ def extract_question_from_transcript(session_id: str) -> Optional[dict]:
                         if isinstance(q_data, list) and q_data:
                             first = q_data[0]
                             return {
-                                "question": first.get("question", "Pilih opsi di bawah ini ya, Shisou~"),
+                                "question": first.get("question", "Please select an option below, Shisou~"),
                                 "options": first.get("options", []),
                             }
             except Exception:
@@ -249,7 +255,7 @@ def extract_question_and_options(output_text: str, session_id: Optional[str] = N
 
     if len(options) >= 2:
         return {
-            "question": "Pilih salah satu opsi di bawah ini ya, Shisou~",
+            "question": "Please select one of the options below, Shisou~",
             "options": options[:5],
         }
     return None
@@ -468,8 +474,8 @@ async def generate_final_plan(
         for item in qna:
             q = item.get("question", "")
             a = item.get("answer", "")
-            qna_lines.append(f"- Pertanyaan: {q}\n  Jawaban Shisou: {a}")
-        qna_text = "\n\nKeputusan & Pilihan Desain dari Shisou:\n" + "\n".join(qna_lines)
+            qna_lines.append(f"- Question: {q}\n  Answer from Shisou: {a}")
+        qna_text = "\n\nDecisions & Design Choices from Shisou:\n" + "\n".join(qna_lines)
 
     prompt = (
         f"[System Instruction: {SHAULA_PERSONA}]\n\n"
@@ -480,10 +486,10 @@ async def generate_final_plan(
         "- Create a detailed, actionable Implementation Plan.\n"
         "- Default language is English. If the task description is in Indonesian, write the plan in Indonesian.\n"
         "- Structure the plan cleanly with Markdown headings:\n"
-        "  1. 🎯 Ringkasan Tujuan / Goal Summary\n"
-        "  2. 🏗️ Arsitektur & Desain Solusi / Architecture & Design (berdasarkan pilihan Shisou)\n"
-        "  3. 📝 File & Komponen / Modified Files & Components\n"
-        "  4. 🧪 Langkah Pengujian & Verifikasi / Verification Steps\n"
+        "  1. 🎯 Goal Summary\n"
+        "  2. 🏗️ Architecture & Design (incorporating Shisou's choices)\n"
+        "  3. 📝 Modified Files & Components\n"
+        "  4. 🧪 Verification Steps\n"
         "- Use Shaula's persona in the introductory and concluding remarks.\n"
         "- Do NOT execute the changes yet — only formulate the plan."
     )
@@ -563,6 +569,9 @@ async def run_execution(
     env = {**os.environ}
     if config.ANTHROPIC_API_KEY:
         env["ANTHROPIC_API_KEY"] = config.ANTHROPIC_API_KEY
+    if config.DELEGATE_INTAKE_TOKEN:
+        env["DELEGATE_INTAKE_TOKEN"] = config.DELEGATE_INTAKE_TOKEN
+    env["DISCORD_CHANNEL_ID"] = str(task.channel_id)
     # Run as an alternate Claude account by pointing at its config dir (mirrors the
     # `claude-kantor` wrapper). Session transcripts live here too, so resume stays
     # consistent as long as the same config_dir is used across turns.

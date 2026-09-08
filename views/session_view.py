@@ -27,7 +27,7 @@ class HapusThreadView(discord.ui.View):
         super().__init__(timeout=None)
         self.persona = persona
 
-    @discord.ui.button(label="Hapus thread", style=discord.ButtonStyle.secondary, emoji="🗑️")
+    @discord.ui.button(label="Delete thread", style=discord.ButtonStyle.secondary, emoji="🗑️")
     async def delete_thread(self, interaction: discord.Interaction, button: discord.ui.Button):
         from services import claude_session
 
@@ -39,7 +39,7 @@ class HapusThreadView(discord.ui.View):
         engine_label = "Antigravity" if getattr(config, "CLI_ENGINE", "") == "agy" else "Claude"
         if claude_session.is_active(channel.id):
             await interaction.response.send_message(
-                f"⚠️ Session {engine_label} masih aktif. Stop dulu ya, baru {self.persona} bisa hapus thread~",
+                f"⚠️ {engine_label} session is still active! Stop it first so {self.persona} can delete the thread, Shisou~",
                 ephemeral=True,
             )
             return
@@ -47,12 +47,12 @@ class HapusThreadView(discord.ui.View):
         # Drop the button first; the channel is about to disappear anyway.
         await interaction.response.edit_message(view=None)
         try:
-            await channel.send(f"🗑️ Oke Shisou, {self.persona} hapus thread ini ya~ dadah~ ✨")
+            await channel.send(f"🗑️ Alright Shisou, {self.persona} is deleting this thread now~ Bye bye! ✨ (✧ω✧)")
             await channel.delete()
         except discord.Forbidden:
             await channel.send(
-                f"⚠️ {self.persona} nggak punya izin `Manage Threads` buat hapus thread. "
-                "Tambahin permission-nya dulu ya~"
+                f"⚠️ {self.persona} doesn't have `Manage Threads` permission to delete this thread. "
+                "Please grant it first, Shisou~"
             )
         except discord.HTTPException:
             pass
@@ -81,7 +81,7 @@ class StopSessionView(discord.ui.View):
         killed = claude_session.kill_session_task(claude_session.get(self.channel_id))
         sess = claude_session.stop(self.channel_id)
         turns = sess.turns if sess else 0
-        note = f" Task yang lagi jalan {self.persona} hentikan juga ya~" if killed else ""
+        note = f" The running task was stopped too, Shisou~" if killed else ""
 
         # Retire this Stop button from the active-session notice.
         await interaction.response.edit_message(view=None)
@@ -90,7 +90,7 @@ class StopSessionView(discord.ui.View):
         view = HapusThreadView(self.persona) if is_thread else None
         engine_label = "Antigravity" if getattr(config, "CLI_ENGINE", "") == "agy" else "Claude"
         await interaction.channel.send(
-            f"🛑 Session {engine_label} ditutup ya, Shisou~ ({turns} turn).{note}",
+            f"🛑 {engine_label} session closed, Shisou~ ({turns} turn(s)).{note}",
             view=view,
         )
         await archive_thread(interaction.channel)

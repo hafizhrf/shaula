@@ -54,12 +54,12 @@ class PlanQuestionView(discord.ui.View):
 
         # Skip / Default button
         skip_btn = discord.ui.Button(
-            label="Terserah Shaula",
+            label="As Shaula wishes",
             style=discord.ButtonStyle.secondary,
             emoji="⏩",
             custom_id="plan_opt_skip",
         )
-        skip_btn.callback = self._make_callback("Terserah Shaula (pilih opsi terbaik menurutmu)", -1)
+        skip_btn.callback = self._make_callback("As Shaula wishes (pick best option)", -1)
         self.add_item(skip_btn)
 
     def _can_interact(self, interaction: discord.Interaction) -> bool:
@@ -72,7 +72,7 @@ class PlanQuestionView(discord.ui.View):
         async def callback(interaction: discord.Interaction):
             if not self._can_interact(interaction):
                 await interaction.response.send_message(
-                    f"Hanya Shisou <@{self.creator_id}> yang bisa memilih opsi ini ya~",
+                    f"Only Shisou <@{self.creator_id}> can choose this option, Shisou~",
                     ephemeral=True,
                 )
                 return
@@ -86,9 +86,9 @@ class PlanQuestionView(discord.ui.View):
                     ):
                         item.style = discord.ButtonStyle.success
 
-            selected_desc = f"**{choice_text}**" if choice_idx >= 0 else "*Terserah Shaula*"
+            selected_desc = f"**{choice_text}**" if choice_idx >= 0 else "*As Shaula wishes*"
             await interaction.response.edit_message(
-                content=f"{interaction.message.content}\n\n👉 **Dipilih oleh Shisou:** {selected_desc}",
+                content=f"{interaction.message.content}\n\n👉 **Selected by Shisou:** {selected_desc}",
                 view=self,
             )
 
@@ -104,14 +104,14 @@ class PlanQuestionView(discord.ui.View):
         if self.message:
             try:
                 await self.message.edit(
-                    content=f"{self.message.content}\n\n*(⏰ Waktu habis — Shaula pilihkan opsi rekomendasi ya~)*",
+                    content=f"{self.message.content}\n\n*(⏰ Time's up — Shaula will pick the recommended option, Shisou~)*",
                     view=self,
                 )
             except discord.HTTPException:
                 pass
         if not self.future.done():
             # Default to first option or fallback text
-            default_choice = self.options[0] if self.options else "Terserah Shaula"
+            default_choice = self.options[0] if self.options else "As Shaula wishes"
             self.future.set_result(default_choice)
 
 
@@ -137,11 +137,11 @@ class PlanExecuteView(discord.ui.View):
         user_role_ids = {r.id for r in interaction.user.roles}
         return bool(user_role_ids & config.ALLOWED_APPROVER_ROLE_IDS)
 
-    @discord.ui.button(label="Jalankan Plan Ini", style=discord.ButtonStyle.success, emoji="🚀")
+    @discord.ui.button(label="Execute Plan", style=discord.ButtonStyle.success, emoji="🚀")
     async def execute_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._can_interact(interaction):
             await interaction.response.send_message(
-                f"Hanya Shisou <@{self.creator_id}> yang bisa mengeksekusi plan ini ya~",
+                f"Only Shisou <@{self.creator_id}> can execute this plan, Shisou~",
                 ephemeral=True,
             )
             return
@@ -152,16 +152,16 @@ class PlanExecuteView(discord.ui.View):
 
         await interaction.response.edit_message(view=self)
         await interaction.channel.send(
-            f"🚀 **Plan disetujui oleh Shisou {interaction.user.mention}!**\n"
-            f"Shaula langsung mulai eksekusi sekarang ya~ Ganbarimasu! (๑•̀ㅂ•́)و✧"
+            f"🚀 **Plan approved by Shisou {interaction.user.mention}!**\n"
+            f"Shaula is starting execution right now~ Ganbarimasu! (๑•̀ㅂ•́)و✧"
         )
         asyncio.create_task(self.on_execute(interaction.channel))
 
-    @discord.ui.button(label="Batalkan", style=discord.ButtonStyle.danger, emoji="🛑")
+    @discord.ui.button(label="Cancel", style=discord.ButtonStyle.danger, emoji="🛑")
     async def cancel_button(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not self._can_interact(interaction):
             await interaction.response.send_message(
-                f"Hanya Shisou <@{self.creator_id}> yang bisa membatalkan plan ini ya~",
+                f"Only Shisou <@{self.creator_id}> can cancel this plan, Shisou~",
                 ephemeral=True,
             )
             return
@@ -171,7 +171,7 @@ class PlanExecuteView(discord.ui.View):
             item.disabled = True
 
         await interaction.response.edit_message(view=self)
-        await interaction.channel.send(f"🛑 Plan dibatalkan oleh {interaction.user.mention}.")
+        await interaction.channel.send(f"🛑 Plan cancelled by {interaction.user.mention}, Shisou~")
 
     async def on_timeout(self):
         for item in self.children:
@@ -228,7 +228,7 @@ class SessionQuestionChoiceView(discord.ui.View):
         async def callback(interaction: discord.Interaction):
             if not self._can_interact(interaction):
                 await interaction.response.send_message(
-                    f"Hanya Shisou <@{self.creator_id}> yang bisa memilih opsi ini ya~",
+                    f"Only Shisou <@{self.creator_id}> can choose this option, Shisou~",
                     ephemeral=True,
                 )
                 return
@@ -241,7 +241,7 @@ class SessionQuestionChoiceView(discord.ui.View):
                         item.style = discord.ButtonStyle.success
 
             await interaction.response.edit_message(
-                content=f"{interaction.message.content}\n\n👉 **Dipilih oleh Shisou:** **{choice_text}**",
+                content=f"{interaction.message.content}\n\n👉 **Selected by Shisou:** **{choice_text}**",
                 view=self,
             )
 
@@ -249,7 +249,7 @@ class SessionQuestionChoiceView(discord.ui.View):
             from commands.task import _execute_and_stream
             from services import task_store, conversation
 
-            prompt = f"Pilihan Shisou: {choice_text}"
+            prompt = f"Shisou's choice: {choice_text}"
             conversation.add_message(self.channel.id, "user", prompt)
             exec_task = task_store.create_task(
                 description=prompt,
@@ -309,7 +309,7 @@ class InputPromptButtonsView(discord.ui.View):
         async def callback(interaction: discord.Interaction):
             if interaction.user.id != self.creator_id:
                 await interaction.response.send_message(
-                    "Hanya pembuat task yang bisa memilih respon ini ya~",
+                    "Only the task creator can choose this response, Shisou~",
                     ephemeral=True,
                 )
                 return
@@ -320,7 +320,7 @@ class InputPromptButtonsView(discord.ui.View):
                     item.disabled = True
 
             await interaction.response.edit_message(
-                content=f"{interaction.message.content}\n\n👉 **Input dikirim:** `{choice_text}`",
+                content=f"{interaction.message.content}\n\n👉 **Input sent:** `{choice_text}`",
                 view=self,
             )
 

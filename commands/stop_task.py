@@ -13,7 +13,7 @@ class StopTaskCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="stop-task", description="Stop task yang sedang berjalan dan tutup session Shaula")
+    @app_commands.command(name="stop-task", description="Stop running tasks and close Shaula's session")
     @app_commands.describe(task_id="Task ID (first 8 chars shown in the task message). Leave empty to stop all running tasks.")
     async def stop_task(self, interaction: discord.Interaction, task_id: str = ""):
         running = task_store.list_running()
@@ -31,11 +31,11 @@ class StopTaskCommands(commands.Cog):
                 await _clear_active_button(closed_sess)
                 is_thread = isinstance(interaction.channel, discord.Thread)
                 await interaction.response.send_message(
-                    f"🛑 Session Shaula ditutup ya, Shisou~ ({closed_sess.turns} turn).",
+                    f"🛑 Shaula session closed, Shisou~ ({closed_sess.turns} turn(s)).",
                     view=HapusThreadView("Shaula") if is_thread else None,
                 )
             else:
-                await interaction.response.send_message("Tidak ada task atau session yang aktif, Shisou~", ephemeral=True)
+                await interaction.response.send_message("No active tasks or sessions found, Shisou~", ephemeral=True)
             return
 
         if task_id:
@@ -43,7 +43,7 @@ class StopTaskCommands(commands.Cog):
             if not targets:
                 ids = ", ".join(f"`{t.task_id[:8]}`" for t in running)
                 await interaction.response.send_message(
-                    f"Task `{task_id}` tidak ditemukan. Yang lagi jalan: {ids}", ephemeral=True
+                    f"Task `{task_id}` not found, Shisou~. Currently running: {ids}", ephemeral=True
                 )
                 return
         else:
@@ -60,9 +60,9 @@ class StopTaskCommands(commands.Cog):
             task_store.update_state(task.task_id, TaskState.CANCELLED)
 
         if stopped:
-            msg = "Shaula stop task-nya ya, Shisou~\n" + "\n".join(f"❌ {s}" for s in stopped)
+            msg = "Shaula stopped the task(s), Shisou~! (๑•̀ㅂ•́)و✧\n" + "\n".join(f"❌ {s}" for s in stopped)
         else:
-            msg = "Task sudah selesai sendiri sebelum di-stop."
+            msg = "Task already finished before it could be stopped, Shisou~"
 
         await interaction.response.send_message(msg)
 

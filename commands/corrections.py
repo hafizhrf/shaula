@@ -9,39 +9,39 @@ class CorrectionsCommands(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
-    @app_commands.command(name="corrections", description="Lihat dan kelola rules yang Emilia sudah pelajari")
-    @app_commands.describe(remove="Nomor rule yang mau dihapus (opsional)")
+    @app_commands.command(name="corrections", description="View and manage learned memory rules")
+    @app_commands.describe(remove="Rule number to remove (optional)")
     async def corrections_cmd(self, interaction: discord.Interaction, remove: int = 0):
         if remove > 0:
             removed = skill_manager.remove_correction(remove)
             if removed:
                 await interaction.response.send_message(
-                    f"✅ Rule #{remove} dihapus:\n> ~~{removed}~~", ephemeral=True
+                    f"✅ Rule #{remove} deleted:\n> ~~{removed}~~", ephemeral=True
                 )
             else:
                 await interaction.response.send_message(
-                    f"⚠️ Rule #{remove} tidak ditemukan.", ephemeral=True
+                    f"⚠️ Rule #{remove} not found.", ephemeral=True
                 )
             return
 
         rules = skill_manager.list_corrections()
         skills = skill_manager.list_skills()
 
-        embed = discord.Embed(title="🧠 Emilia's Memory", color=discord.Color.purple())
+        embed = discord.Embed(title="🧠 Memory Rules", color=discord.Color.purple())
 
         if rules:
             lines = "\n".join(f"`{i+1}.` {r}" for i, r in enumerate(rules))
             embed.add_field(name=f"Rules ({len(rules)})", value=lines[:1000], inline=False)
         else:
-            embed.add_field(name="Rules", value="*(belum ada — ajari Emilia sesuatu!)*", inline=False)
+            embed.add_field(name="Rules", value="*(none yet — teach something new!)*", inline=False)
 
         if skills:
             lines = "\n".join(f"• **{n}** — {v['description']}" for n, v in skills.items())
             embed.add_field(name=f"Skills ({len(skills)})", value=lines[:1000], inline=False)
         else:
-            embed.add_field(name="Skills", value="*(belum ada skill)*", inline=False)
+            embed.add_field(name="Skills", value="*(no skills loaded)*", inline=False)
 
-        embed.set_footer(text="Gunakan /corrections remove:<nomor> untuk hapus rule")
+        embed.set_footer(text="Use /corrections remove:<number> to delete a rule")
         await interaction.response.send_message(embed=embed)
 
 

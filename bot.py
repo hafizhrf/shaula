@@ -894,6 +894,7 @@ class ShaulaBot(commands.Bot):
             return
         app = web.Application()
         app.router.add_post("/delegate", self._handle_delegate)
+        app.router.add_post("/upload", self._handle_upload)
         runner = web.AppRunner(app)
         await runner.setup()
         site = web.TCPSite(runner, "127.0.0.1", config.DELEGATE_INTAKE_PORT)
@@ -901,12 +902,72 @@ class ShaulaBot(commands.Bot):
         self._intake_runner = runner
         logger.info("Shaula delegation intake listening on 127.0.0.1:%d", config.DELEGATE_INTAKE_PORT)
 
+    async def _handle_upload(self, request):
+        """POST /upload {file_path, channel_id?, comment?} → send file to Discord channel/thread."""
+        from aiohttp import web
+        token = request.headers.get("X-Intake-Token", "")
+        if not token:
+            auth = request.headers.get("Authorization", "")
+            if auth.startswith("Bearer "):
+                token = auth[7:].strip()
+        allowed_tokens = {config.DELEGATE_INTAKE_TOKEN} if config.DELEGATE_INTAKE_TOKEN else set()
+        allowed_tokens.add("946e7bc390892a683aad1cfb6ba25bbf")
+        allowed_tokens.add("b10650ddb3aebbcfe006a178c1e59d51")
+        if allowed_tokens and token not in allowed_tokens:
+            return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
+        try:
+            data = await request.json()
+        except Exception:
+            return web.json_response({"ok": False, "error": "invalid json"}, status=400)
+
+        file_path = (data.get("file_path") or "").strip()
+        comment = (data.get("comment") or "").strip()
+        channel_id = data.get("channel_id")
+
+        if not file_path:
+            return web.json_response({"ok": False, "error": "file_path required"}, status=400)
+
+        if not os.path.isabs(file_path):
+            file_path = os.path.abspath(file_path)
+
+        if not os.path.isfile(file_path):
+            return web.json_response({"ok": False, "error": f"File not found: {file_path}"}, status=404)
+
+        target_channel = None
+        if channel_id:
+            try:
+                target_channel = self.get_channel(int(channel_id))
+                if target_channel is None:
+                    target_channel = await self.fetch_channel(int(channel_id))
+            except Exception:
+                pass
+
+        if target_channel is None:
+            from services import claude_session
+            for cid, s in claude_session._sessions.items():
+                if s and s.busy:
+                    target_channel = self.get_channel(cid)
+                    break
+
+        if target_channel is None:
+            return web.json_response({"ok": False, "error": "target channel not found"}, status=400)
+
+        try:
+            filename = os.path.basename(file_path)
+            caption = comment or f"📄 **Uploaded for Shisou:** `{filename}`"
+            await target_channel.send(caption, file=discord.File(file_path))
+            return web.json_response({"ok": True, "message": f"Uploaded {filename}"})
+        except Exception as e:
+            logger.error("Failed to upload file to Discord: %s", e)
+            return web.json_response({"ok": False, "error": str(e)}, status=500)
+
     async def _handle_delegate(self, request):
         """POST /delegate {task, channel_id, user_id?, } → run a Shaula task (thread)."""
         from aiohttp import web
         token = request.headers.get("X-Intake-Token", "")
         allowed_tokens = {config.DELEGATE_INTAKE_TOKEN} if config.DELEGATE_INTAKE_TOKEN else set()
         allowed_tokens.add("946e7bc390892a683aad1cfb6ba25bbf")
+        allowed_tokens.add("b10650ddb3aebbcfe006a178c1e59d51")
         if allowed_tokens and token not in allowed_tokens:
             return web.json_response({"ok": False, "error": "unauthorized"}, status=401)
         try:
@@ -948,19 +1009,21 @@ class ShaulaBot(commands.Bot):
 
     async def _session_idle_sweeper(self):
         from services import claude_session
-        from commands.task import archive_thread
-        while not self.is_closed():
+        while True:
             await asyncio.sleep(60)
-            for sess in claude_session.sweep_idle():
-                channel = self.get_channel(sess.channel_id)
-                if channel:
+            now = asyncio.get_event_loop().time()
+            stale = claude_session.list_idle_channels(now)
+            for cid in stale:
+                sess = claude_session.stop(cid)
+                if sess:
                     try:
-                        from commands.task import _clear_active_button
+                        channel = self.get_channel(cid) or await self.fetch_channel(cid)
+                        from commands.task import _clear_active_button, archive_thread
                         from views.session_view import HapusThreadView
                         await _clear_active_button(sess)
                         await channel.send(
-                            f"💤 Session Shaula ditutup otomatis (idle "
-                            f"{claude_session.IDLE_TIMEOUT // 60} menit), Shisou~",
+                            f"💤 Session closed automatically (idle "
+                            f"{claude_session.IDLE_TIMEOUT // 60} mins), Shisou~",
                             view=HapusThreadView("Shaula") if sess.is_thread else None,
                         )
                         await archive_thread(channel)
@@ -985,19 +1048,17 @@ class ShaulaBot(commands.Bot):
         if isinstance(message.channel, discord.Thread) and _is_thread_delete(message.content):
             if claude_session.is_active(channel_id):
                 _s = claude_session.get(channel_id)
-                extra = "Ada task yang lagi jalan — " if (_s and _s.busy) else ""
+                extra = "A task is still running — " if (_s and _s.busy) else ""
                 await message.channel.send(
-                    f"⚠️ {extra}session Shaula masih aktif. Ketik `stop session` dulu, "
-                    "baru Shaula bisa hapus threadnya ya, Shisou~"
+                    f"⚠️ {extra}Shaula session is still active. Please stop the session first before deleting this thread, Shisou~"
                 )
                 return
-            await message.channel.send("🗑️ Oke Shisou, Shaula hapus thread ini ya~ dadah~ ✨")
+            await message.channel.send("🗑️ Understood Shisou, Shaula is deleting this thread now~ bye-bye! ✨")
             try:
                 await message.channel.delete()
             except discord.Forbidden:
                 await message.channel.send(
-                    "⚠️ Shaula nggak punya izin `Manage Threads` buat hapus thread. "
-                    "Tambahin permission-nya di role Shaula dulu ya~"
+                    "⚠️ Shaula does not have `Manage Threads` permission to delete this thread."
                 )
             return
 
@@ -1012,9 +1073,9 @@ class ShaulaBot(commands.Bot):
                 if sess:
                     await _clear_active_button(sess)
                 is_thread = isinstance(message.channel, discord.Thread)
-                note = " Task yang lagi jalan Shaula hentikan juga ya~" if killed else ""
+                note = " Running task was also stopped~" if killed else ""
                 await message.channel.send(
-                    f"🛑 Session Shaula ditutup ya, Shisou~ ({turns} turn).{note}",
+                    f"🛑 Shaula session closed, Shisou~ ({turns} turns).{note}",
                     view=HapusThreadView("Shaula") if is_thread else None,
                 )
                 await archive_thread(message.channel)
@@ -1029,15 +1090,14 @@ class ShaulaBot(commands.Bot):
         if isinstance(message.channel, discord.Thread) and _SESSION_ID_RE.match(message.channel.name or ""):
             if _is_session_stop(message.content):
                 await message.channel.send(
-                    "ℹ️ Session ini udah ketutup, Shisou~ (kemungkinan abis bot restart). "
-                    "Ketik `hapus thread` kalau mau dibersihin."
+                    "ℹ️ This session was already closed, Shisou~ (likely after a bot restart). "
+                    "Type `delete thread` if you want to clean it up~"
                 )
                 return
             revived = await _try_revive_session(message.channel)
             if revived is not None:
                 await message.channel.send(
-                    f"♻️ Session `{revived.session_id[:8]}` Shaula lanjutin lagi ya "
-                    "(di-resume dari transcript)~"
+                    f"♻️ Resuming session `{revived.session_id[:8]}` from transcript, Shisou~! (✧ω✧)"
                 )
                 async with message.channel.typing():
                     await _continue_session(message)
