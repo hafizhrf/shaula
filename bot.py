@@ -781,6 +781,26 @@ class DevOpsBot(commands.Bot):
                     async with message.channel.typing():
                         await _continue_session(message)
                     return
+            elif isinstance(message.channel, discord.Thread) and _SESSION_ID_RE.match(message.channel.name or ""):
+                if _is_session_stop(message.content):
+                    from commands.task import _clear_active_button
+                    from views.session_view import HapusThreadView
+                    await _clear_active_button(None, message.channel)
+                    await message.channel.send(
+                        "ℹ️ Session ini udah ditutup sebelumnya, Apis~ Ketik `hapus thread` kalau mau dibersihkan ya~",
+                        view=HapusThreadView("Emilia"),
+                    )
+                    return
+                revived = await _try_revive_session(message.channel)
+                if revived is not None:
+                    from commands.task import _clear_active_button
+                    await _clear_active_button(revived, message.channel)
+                    await message.channel.send(
+                        f"♻️ Melanjutkan session `{revived.session_id[:8]}` dari transcript ya, Apis~ ✨"
+                    )
+                    async with message.channel.typing():
+                        await _continue_session(message)
+                    return
 
         # Attachment → task: a text/.md file attached in the main channel means "do this,
         # here's the doc". Download it and forward the content to Shaula as task context
